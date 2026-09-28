@@ -1,101 +1,90 @@
-# PolarOps Cloudflare Edition
+# PolarOps — Local Node/React Refactor
 
-PolarOps v2.0 is the Cloudflare-native edition of the Antarctic expedition logistics and asset-management platform.
+This branch is the local-development conversion of PolarOps to JavaScript, Node.js, Express, React and Vite.
 
-## Stack
+**No deployment is configured or performed by this refactor.** The original Cloudflare/Python implementation remains in the repository as reference material. See `NODE_REACT_ARCHITECTURE_AUDIT.md` and `NODE_REACT_MIGRATION_PLAN.md`.
 
-- **Frontend:** Workers Static Assets
-- **API:** FastAPI on Cloudflare Python Workers
-- **Database:** Cloudflare D1
-- **Realtime:** one Durable Object WebSocket room per expedition
-- **Backups:** Cloudflare R2
-- **External data:** COMNAP facility sync, Open-Meteo current model conditions, optional authorized operations feed
-- **Offline field support:** existing PWA shell and browser mutation queue
+## Local stack
 
-The frontend and API are served from the **same Worker/domain**, so there is no separate GitHub Pages deployment and no CORS configuration is required.
+- Backend: Node.js + Express.js
+- Database: local SQLite through Node's built-in `node:sqlite`
+- Frontend: React + JSX + Vite
+- SPA routing: `react-router-dom`
+- Maps: Leaflet + `react-leaflet`
+- Realtime: WebSocket via `ws`
+- Offline: service worker shell cache + IndexedDB read cache/mutation queue
 
-## Demo login
+No production D1 connection is used by the Node backend.
 
-After applying both D1 migrations:
+## Run locally
+
+Backend:
+
+```bash
+cd Backend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+Backend: http://127.0.0.1:5000
+
+Frontend:
+
+```bash
+cd Frontend
+npm install
+npm run dev
+```
+
+Frontend: http://127.0.0.1:5173
+
+The Vite development server proxies `/api` and `/ws` to the local Express backend.
+
+## Local demo accounts
 
 - Commander: `commander@polarops.local` / `PolarOps123!`
 - Logistics: `logistics@polarops.local` / `Logistics123!`
 - Field: `field@polarops.local` / `Field123!`
 
-Change these before using the service beyond a demo.
+These are synthetic local-development credentials only.
 
-## Local development
+## Validation
 
-Cloudflare Python Workers use `uv` + `pywrangler`, not a normal `python app.py` server.
-
-```bash
-npm install
-cp .dev.vars.example .dev.vars
-# Edit .dev.vars and set AUTH_SECRET.
-
-uv sync --dev
-npx wrangler d1 migrations apply polarops-db --local
-uv run pywrangler dev
-```
-
-Open the URL printed by pywrangler, normally `http://localhost:8787`.
-
-## Production deployment
-
-See [CLOUDFLARE_DEPLOY.md](CLOUDFLARE_DEPLOY.md). The short version is:
+Backend:
 
 ```bash
-npx wrangler login
-npx wrangler d1 create polarops-db
-npx wrangler r2 bucket create polarops-backups
+cd Backend
+npm test
+npm run lint
 ```
 
-Copy the D1 database ID into `wrangler.jsonc`, then:
+Frontend:
 
 ```bash
-npx wrangler secret put AUTH_SECRET
-# Optional real worker-feed credential:
-npx wrangler secret put OPERATIONS_FEED_TOKEN
-
-npx wrangler d1 migrations apply polarops-db --remote
-uv run pywrangler deploy
+cd Frontend
+npm run lint
+npm run build
+npm run test:browser
 ```
 
-## Multinational model
+The browser smoke test uses the locally installed Google Chrome executable. It validates login, role login endpoints, core APIs, realtime, all SPA modules, React-Leaflet routes/zones, Polar Network switching and runtime errors.
 
-`organizations` is the tenant boundary. Users and expeditions belong to one organization. The API filters expedition access by `organization_id`. Public Antarctic facility metadata is global reference data; private personnel, cargo, telemetry and incidents remain tenant-scoped.
+For production-build/offline verification:
 
-## Realtime model
-
-Each expedition uses one Durable Object named with the expedition ID. The browser opens:
-
-```text
-wss://<your-domain>/ws/expeditions/<id>
+```bash
+cd Frontend
+npm run build
+npm run preview
+POLAROPS_BASE_URL=http://127.0.0.1:4173 POLAROPS_CHECK_OFFLINE=1 node scripts/browser-smoke.mjs
 ```
 
-The browser authenticates over the socket with the same signed session token. After any API mutation, the Worker broadcasts an event through the expedition's Durable Object. The browser then re-reads authoritative state from D1.
+See `PHASE_VALIDATION.md` for the completed phase record.
 
-## Real workers
+## Data boundaries
 
-PolarOps does **not** scrape live personnel locations. Real workers should enter through either:
+Arctic / North and Antarctic / South remain separate operational/reference contexts. Public station/facility records retain source and verification metadata. Synthetic demo records are not labeled as live data.
 
-1. logged-in field devices posting `/api/telemetry/position`, or
-2. an authorized programme/organization feed configured as `OPERATIONS_FEED_URL` plus optional `OPERATIONS_FEED_TOKEN`.
+## Git and deployment
 
-Synthetic workers in the included seed database are marked `source=demo` and `is_synthetic=1`.
-
-## Important free-tier consideration
-
-Cloudflare D1 limits the number of queries per Worker invocation on the Free plan. The COMNAP sync endpoint therefore processes at most 35 facilities per request; the frontend automatically continues until the public directory is synchronized. Large operational worker feeds should be paginated, queued, or run on a paid Workers plan.
-
-## Main files
-
-```text
-src/worker.py                 FastAPI Worker + Durable Object
-migrations/0001_initial.sql  D1 schema
-migrations/0002_seed_demo.sql Demo seed
-public/                       Static frontend/PWA
-wrangler.jsonc                Cloudflare bindings/config
-pyproject.toml                Python Worker dependencies
-```
-# polarops
+Work remains on `node-react-refactor`. Do not merge to `main`, push, deploy, run remote migrations, alter DNS, or change production Cloudflare resources without explicit approval.
