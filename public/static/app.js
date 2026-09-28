@@ -1,0 +1,506 @@
+(() => {
+  'use strict';
+
+  const $ = (s, root=document) => root.querySelector(s);
+  const $$ = (s, root=document) => [...root.querySelectorAll(s)];
+  const esc = (v='') => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const tokenKey='polarops_token_v1', cacheKey='polarops_cache_v1', queueKey='polarops_queue_v1';
+  const state = {
+    token: localStorage.getItem(tokenKey) || '', user:null, expeditions:[], expeditionId:null,
+    view:'overview', online:navigator.onLine, pending: JSON.parse(localStorage.getItem(queueKey)||'[]'),
+    serviceWorker:false,
+    realtimeStatus:'disconnected', ws:null, wsGeneration:0, wsReconnect:null, wsPing:null, realtimeRender:null,
+    fallbackTimer:null, deferredRealtime:false,
+    gpsWatchId:null, gpsPersonnelId:null, gpsLastSent:0,
+    vehicleSimTimer:null, vehicleSimId:null, vehicleSimStep:0, vehicleSimBase:null
+  };
+
+  const navItems=[
+    ['overview','⌂','Overview'],['personnel','◎','Personnel'],['cargo','▣','Cargo'],['inventory','▤','Inventory'],
+    ['assets','◇','Assets'],['vehicles','▱','Vehicles'],['emergency','△','Emergency'],['network','⌖','Antarctic Network'],['activity','≡','Activity'],['settings','⚙','Settings']
+  ];
+
+  function saveQueue(){ localStorage.setItem(queueKey,JSON.stringify(state.pending)); updateSync(); }
+  function getCache(){ try{return JSON.parse(localStorage.getItem(cacheKey)||'{}')}catch{return {}} }
+  function setCache(path,data){ const c=getCache(); c[path]={ts:Date.now(),data}; localStorage.setItem(cacheKey,JSON.stringify(c)); }
+  function fromCache(path){ const c=getCache()[path]; return c?.data; }
+  function toast(title,detail='',kind='good',ms=2800){
+    const root=$('#toastRoot'); if(!root)return;
+    const el=document.createElement('div'); el.className=`toast ${kind}`; el.innerHTML=`<strong>${esc(title)}</strong>${detail?`<span>${esc(detail)}</span>`:''}`;
+    root.appendChild(el); setTimeout(()=>el.remove(),ms);
+  }
+
+  async function api(path,opts={}){
+    const method=(opts.method||'GET').toUpperCase();
+    const headers={'Content-Type':'application/json',...(opts.headers||{})};
+    if(state.token) headers.Authorization=`Bearer ${state.token}`;
+    try{
+      const res=await fetch(path,{...opts,method,headers});
+      if(res.status===401 && path!='/api/auth/login'){ logout(false); throw new Error('Your session expired. Please sign in again.'); }
+      let data=null; const ct=res.headers.get('content-type')||'';
+      if(ct.includes('application/json')) data=await res.json(); else data=await res.text();
+      if(!res.ok) throw new Error(data?.detail || data || `Request failed (${res.status})`);
+      state.online=true;
+      if(method==='GET') setCache(path,data);
+      updateSync();
+      return data;
+    }catch(err){
+      state.online=navigator.onLine;
+      updateSync();
+      if(method==='GET'){
+        const cached=fromCache(path); if(cached!==undefined){ toast('Offline data shown','Using the latest cached mission snapshot.','warn'); return cached; }
+      } else if(!navigator.onLine && path!='/api/auth/login'){
+        const item={id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,path,method,body:opts.body||null,created_at:new Date().toISOString()};
+        state.pending.push(item); saveQueue(); toast('Action queued for sync','It will be sent when connectivity returns.','warn'); return {queued:true};
+      }
+      throw err;
+    }
+  }
+
+  async function flushQueue(){
+    if(!navigator.onLine || !state.token || !state.pending.length) return;
+    const queued=[...state.pending], failed=[];
+    for(const q of queued){
+      try{ await fetch(q.path,{method:q.method,headers:{'Content-Type':'application/json','Authorization':`Bearer ${state.token}`},body:q.body}); }
+      catch{ failed.push(q); }
+    }
+    state.pending=failed; saveQueue();
+    if(!failed.length && queued.length){ toast('Offline actions synchronized',`${queued.length} queued action${queued.length===1?'':'s'} uploaded.`); renderView(); }
+  }
+
+  function updateSync(){
+    const dot=$('.sync-dot'), a=$('#syncLabel'), b=$('#syncDetail'); if(dot){
+      dot.className='sync-dot';
+      if(!navigator.onLine){dot.classList.add('offline'); if(a)a.textContent='OFFLINE';if(b)b.textContent=`${state.pending.length} queued`}
+      else if(state.pending.length){dot.classList.add('pending');if(a)a.textContent='SYNC PENDING';if(b)b.textContent=`${state.pending.length} queued`}
+      else{if(a)a.textContent='SYNC ONLINE';if(b)b.textContent='Central database connected'}
+    }
+    updateRealtimeIndicator();
+  }
+
+  function updateRealtimeIndicator(){
+    const pill=$('#realtimePill'),label=$('#realtimeLabel'); if(!pill)return;
+    pill.className=`realtime-pill ${state.realtimeStatus}`;
+    if(label) label.textContent=state.realtimeStatus==='live'?'LIVE':state.realtimeStatus==='connecting'?'CONNECTING':!navigator.onLine?'OFFLINE':'FALLBACK';
+  }
+
+  function disconnectRealtime(){
+    state.wsGeneration++;
+    clearTimeout(state.wsReconnect);clearInterval(state.wsPing);
+    state.wsReconnect=null;state.wsPing=null;
+    if(state.ws){ try{state.ws.close()}catch{} }
+    state.ws=null;state.realtimeStatus=navigator.onLine?'disconnected':'offline';updateRealtimeIndicator();
+  }
+
+  function connectRealtime(){
+    if(!state.token||!state.expeditionId||!navigator.onLine)return;
+    disconnectRealtime();
+    const generation=++state.wsGeneration;
+    const protocol=location.protocol==='https:'?'wss':'ws';
+    const socket=new WebSocket(`${protocol}://${location.host}/ws/expeditions/${state.expeditionId}`);
+    state.ws=socket;state.realtimeStatus='connecting';updateRealtimeIndicator();
+    socket.onopen=()=>{ if(generation!==state.wsGeneration)return; socket.send(JSON.stringify({type:'auth',token:state.token})); };
+    socket.onmessage=e=>{ if(generation!==state.wsGeneration)return; let msg;try{msg=JSON.parse(e.data)}catch{return}
+      if(msg.type==='auth.ok'){state.realtimeStatus='live';updateRealtimeIndicator();clearInterval(state.wsPing);state.wsPing=setInterval(()=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ping'}))},25000);return}
+      if(msg.type==='auth.error'){state.realtimeStatus='disconnected';updateRealtimeIndicator();return}
+      if(msg.type==='pong')return;
+      handleRealtimeEvent(msg);
+    };
+    socket.onerror=()=>{if(generation===state.wsGeneration){state.realtimeStatus='disconnected';updateRealtimeIndicator()}};
+    socket.onclose=()=>{if(generation!==state.wsGeneration)return;state.ws=null;clearInterval(state.wsPing);state.wsPing=null;state.realtimeStatus=navigator.onLine?'disconnected':'offline';updateRealtimeIndicator();if(state.token&&navigator.onLine){clearTimeout(state.wsReconnect);state.wsReconnect=setTimeout(connectRealtime,3000)}};
+  }
+
+  function handleRealtimeEvent(message){
+    if(Number(message.expedition_id)!==Number(state.expeditionId))return;
+    if(message.type==='incident.created')toast('Live SOS received',message.data?.code||'New incident','danger',4200);
+    if($('#modalRoot')?.children.length){state.deferredRealtime=true;return}
+    clearTimeout(state.realtimeRender);
+    state.realtimeRender=setTimeout(()=>renderView(),250);
+  }
+
+  function startFallbackRefresh(){
+    clearInterval(state.fallbackTimer);
+    state.fallbackTimer=setInterval(()=>{
+      if(!state.token||!navigator.onLine||state.realtimeStatus==='live'||document.hidden||$('#modalRoot')?.children.length)return;
+      renderView();
+    },10000);
+  }
+
+  window.addEventListener('online',()=>{state.online=true;updateSync();flushQueue();connectRealtime()});
+  window.addEventListener('offline',()=>{state.online=false;disconnectRealtime();updateSync()});
+
+  function initials(name=''){ return name.split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase() || 'PO'; }
+  function fmtDate(v){ if(!v)return '—'; const d=new Date(v); if(Number.isNaN(+d))return esc(v); return d.toLocaleString([], {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+  function fmtTime(v){ if(!v)return '—'; const d=new Date(v); return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+  function ago(v){ if(!v)return 'No live fix';const sec=Math.max(0,Math.round((Date.now()-new Date(v).getTime())/1000));if(sec<60)return `${sec}s ago`;if(sec<3600)return `${Math.round(sec/60)}m ago`;return `${Math.round(sec/3600)}h ago`; }
+  function n(v,d=0){ const x=Number(v); return Number.isFinite(x)?x.toFixed(d).replace(/\.0$/,''):'0'; }
+  function badge(text,kind){ return `<span class="badge ${kind||''}"><i class="dot"></i>${esc(text)}</span>`; }
+  function statusKind(s=''){ s=s.toLowerCase(); if(/safe|delivered|operational|available|cleared|resolved|ok/.test(s))return'good'; if(/critical|active|low|overdue|due|maintenance|high/.test(s))return'danger'; if(/transit|moving|response|deployed|medium/.test(s))return'info'; return'warn'; }
+  function roleCan(...roles){ return !!state.user && roles.includes(state.user.role); }
+
+  function renderLogin(){
+    document.title='PolarOps — Sign in';
+    $('#app').innerHTML=`
+      <div class="login-shell">
+        <section class="login-visual">
+          <div class="login-brand brand-lockup"><div class="brand-mark">✦</div><div><strong>POLAROPS</strong><span>Expedition Operations Platform</span></div></div>
+          <div class="login-copy">
+            <span class="eyebrow">Integrated mission command</span>
+            <h1>One operational picture for extreme environments.</h1>
+            <p>Plan expeditions, account for personnel, track cargo and assets, manage safety stock, coordinate vehicles and run emergency response from one shared system.</p>
+            <div class="capability-strip"><span>Personnel accountability</span><span>Cargo chain of custody</span><span>Inventory thresholds</span><span>Asset control</span><span>Emergency command</span><span>Offline queue</span></div>
+          </div>
+        </section>
+        <section class="login-panel">
+          <form id="loginForm" class="login-card">
+            <span class="eyebrow">Secure operations access</span><h2>Welcome back</h2><p>Sign in to your PolarOps command environment.</p>
+            <div class="field"><label>Email</label><input id="loginEmail" type="email" autocomplete="username" required placeholder="commander@polarops.local" /></div>
+            <div class="field"><label>Password</label><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="Password" /></div>
+            <button class="button primary block" type="submit">Sign in</button>
+            <div class="login-help"><strong>Demo accounts</strong><div class="demo-grid">
+              ${demoAccount('Commander','commander@polarops.local','PolarOps123!')}
+              ${demoAccount('Logistics','logistics@polarops.local','Logistics123!')}
+              ${demoAccount('Field lead','field@polarops.local','Field123!')}
+            </div><p class="security-note">Demo credentials are seeded for immediate use. Change passwords and POLAROPS_SECRET before any shared deployment.</p></div>
+          </form>
+        </section>
+      </div>`;
+    $('#loginForm').addEventListener('submit',async e=>{e.preventDefault(); await doLogin($('#loginEmail').value,$('#loginPassword').value)});
+    $$('.demo-account button').forEach(b=>b.addEventListener('click',()=>{ const row=b.closest('.demo-account'); doLogin(row.dataset.email,row.dataset.password); }));
+  }
+  function demoAccount(label,email,pw){ return `<div class="demo-account" data-email="${esc(email)}" data-password="${esc(pw)}"><div><strong>${esc(label)}</strong><span>${esc(email)}</span></div><button type="button">Use account</button></div>`; }
+  async function doLogin(email,password){
+    const btn=$('#loginForm button[type=submit]'); if(btn){btn.disabled=true;btn.textContent='Signing in…'}
+    try{ const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})}); state.token=r.token;state.user=r.user;localStorage.setItem(tokenKey,state.token);await bootAuthed(); toast('Signed in',`Role: ${state.user.role}`); }
+    catch(e){toast('Sign-in failed',e.message,'danger'); if(btn){btn.disabled=false;btn.textContent='Sign in'}}
+  }
+  function logout(show=true){ stopPersonnelGps(false);stopVehicleSimulation(false);disconnectRealtime();clearInterval(state.fallbackTimer);localStorage.removeItem(tokenKey);state.token='';state.user=null;state.expeditions=[];state.expeditionId=null; if(show)toast('Signed out');renderLogin(); }
+
+  async function bootAuthed(){
+    try{ state.user=await api('/api/me'); state.expeditions=await api('/api/expeditions'); if(!state.expeditions.length){ throw new Error('No expedition exists. Create one through the API or reseed demo mode.'); } state.expeditionId=Number(localStorage.getItem('polarops_expedition'))||state.expeditions[0].id; if(!state.expeditions.some(e=>e.id===state.expeditionId))state.expeditionId=state.expeditions[0].id; renderShell(); await renderView(); connectRealtime();startFallbackRefresh(); }
+    catch(e){ toast('Unable to start platform',e.message,'danger',4500); logout(false); }
+  }
+
+  function renderShell(){
+    const exp=state.expeditions.find(e=>e.id===state.expeditionId)||state.expeditions[0];
+    $('#app').innerHTML=`<div class="shell">
+      <aside class="sidebar">
+        <div class="brand-lockup"><div class="brand-mark">✦</div><div><strong>POLAROPS</strong><span>Operations platform</span></div></div>
+        <div class="mission-card"><small>ACTIVE MISSION</small><strong id="missionName">${esc(exp.name)}</strong><span id="missionRegion">${esc(exp.region)}</span></div>
+        <nav class="nav">${navItems.map(([id,ico,label])=>`<button data-view="${id}" class="${id===state.view?'active':''}"><span class="ico">${ico}</span><span>${label}</span></button>`).join('')}</nav>
+        <div class="sidebar-bottom"><div class="sync-box"><i class="sync-dot"></i><div><strong id="syncLabel">SYNC ONLINE</strong><span id="syncDetail">Central database connected</span></div></div>
+          <div class="user-chip"><div class="avatar">${esc(initials(state.user.name))}</div><div><strong>${esc(state.user.name)}</strong><span>${esc(state.user.role)}</span></div><button class="logout-btn" title="Sign out">↪</button></div>
+        </div>
+      </aside>
+      <main class="main"><header class="topbar"><div><span class="eyebrow" id="crumb">POLAR OPERATIONS / ${esc(exp.name)}</span><h1 id="pageTitle">Overview</h1><div id="pageSubtitle" class="page-subtitle">Live expedition status and exceptions.</div></div>
+        <div class="topbar-actions"><span class="realtime-pill connecting" id="realtimePill"><i></i><span id="realtimeLabel">CONNECTING</span></span><select class="expedition-select" id="expeditionSelect">${state.expeditions.map(e=>`<option value="${e.id}" ${e.id===state.expeditionId?'selected':''}>${esc(e.name)}</option>`).join('')}</select><button class="sos-btn" id="globalSOS">⚠ TRIGGER SOS</button></div>
+      </header><section id="view"></section></main></div>`;
+    $$('.nav button').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));
+    $('.logout-btn').addEventListener('click',()=>logout());
+    $('#expeditionSelect').addEventListener('change',async e=>{stopPersonnelGps(false);stopVehicleSimulation(false);state.expeditionId=Number(e.target.value);localStorage.setItem('polarops_expedition',state.expeditionId);const ex=state.expeditions.find(x=>x.id===state.expeditionId);$('#missionName').textContent=ex.name;$('#missionRegion').textContent=ex.region;await renderView();connectRealtime()});
+    $('#globalSOS').addEventListener('click',()=>openIncidentCreate()); updateSync();updateRealtimeIndicator();
+  }
+
+  async function navigate(view){ state.view=view; $$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===view)); await renderView(); }
+  function setHeader(title,subtitle){ const exp=state.expeditions.find(e=>e.id===state.expeditionId); $('#pageTitle').textContent=title;$('#pageSubtitle').textContent=subtitle||'';$('#crumb').textContent=`POLAR OPERATIONS / ${exp?.name||''}`; document.title=`${title} — PolarOps`; }
+  async function renderView(){
+    const v=$('#view'); if(!v)return; v.innerHTML='<div class="panel"><div class="empty"><div><strong>Loading mission data…</strong>Connecting to central operations database.</div></div></div>';
+    try{
+      if(state.view==='overview')await renderOverview(); else if(state.view==='personnel')await renderPersonnel(); else if(state.view==='cargo')await renderCargo(); else if(state.view==='inventory')await renderInventory(); else if(state.view==='assets')await renderAssets(); else if(state.view==='vehicles')await renderVehicles(); else if(state.view==='emergency')await renderEmergency(); else if(state.view==='network')await renderNetwork(); else if(state.view==='activity')await renderActivity(); else if(state.view==='settings')await renderSettings();
+    }catch(e){ v.innerHTML=`<div class="panel"><div class="empty"><div><strong>Could not load this section</strong>${esc(e.message)}</div></div></div>`;toast('Section load failed',e.message,'danger'); }
+  }
+
+  async function renderOverview(){
+    setHeader('Command Overview','Live expedition status, resource posture and operational exceptions.');
+    const d=await api(`/api/dashboard?expedition_id=${state.expeditionId}`), s=d.stats;
+    const riskScore=Math.min(100,d.risks.reduce((a,r)=>a+(r.severity==='high'?28:14),0));
+    $('#view').innerHTML=`
+      <div class="stats">
+        ${stat('Personnel',`${s.personnel_total-s.personnel_overdue} / ${s.personnel_total}`,s.personnel_overdue?`${s.personnel_overdue} check-in overdue`:'All accounted for','◎',s.personnel_overdue?'danger':'good')}
+        ${stat('Cargo',`${s.cargo_delivered} / ${s.cargo_total}`,`Delivered across mission`,'▣','info')}
+        ${stat('Fuel',`${s.fuel_avg}%`,`Average vehicle reserve`,'◫',s.fuel_avg<35?'danger':'warn')}
+        ${stat('Inventory alerts',s.inventory_alerts,s.inventory_alerts?'Items below minimum':'No low stock','▤',s.inventory_alerts?'danger':'good')}
+        ${stat('Vehicles',`${s.vehicles_operational} / ${s.vehicles_total}`,`Operational`,'▱',s.vehicles_operational<s.vehicles_total?'warn':'good')}
+        ${stat('Active incidents',s.active_incidents,s.active_incidents?'Response required':'No active incidents','△',s.active_incidents?'danger':'good')}
+      </div>
+      <div class="grid-2"><div class="panel"><div class="panel-head"><div><h2>Operational Map</h2><p>Locations and response assets for ${esc(d.expedition.name)}.</p></div><span class="badge info"><i class="dot"></i>LIVE DATA</span></div>${renderMap(d.locations,d.vehicles,d.personnel)}</div>
+        <div class="panel"><div class="panel-head"><div><h2>Operational Risk</h2><p>Deterministic exception analysis from mission state.</p></div></div><div class="risk-summary"><div class="risk-ring">${riskScore}</div><div><strong>${riskScore>55?'High attention':riskScore>20?'Requires attention':'Controlled'}</strong><p>Risk score is derived from overdue check-ins, safety-stock breaches and low vehicle fuel.</p></div></div><div class="risk-list">${d.risks.length?d.risks.map(r=>`<div class="risk-item ${r.severity}"><div class="risk-icon">!</div><div><strong>${esc(r.title)}</strong><span>${esc(r.detail)}</span></div></div>`).join(''):'<div class="empty" style="min-height:150px"><div><strong>No current exceptions</strong>Mission thresholds are within configured limits.</div></div>'}</div></div>
+      </div>
+      <div class="grid-equal"><div class="panel"><div class="panel-head"><div><h2>Recent Activity</h2><p>Cross-module operations timeline.</p></div><button class="button ghost small" data-go="activity">View all</button></div><div class="activity-list">${d.activity.slice(0,7).map(a=>activityRow(a)).join('')}</div></div>
+        <div class="panel"><div class="panel-head"><div><h2>Mission Snapshot</h2><p>Assets, timing and command posture.</p></div></div><div class="info-list"><div class="info-row"><span>Region</span><strong>${esc(d.expedition.region)}</strong></div><div class="info-row"><span>Mission status</span><strong>${esc(d.expedition.status)}</strong></div><div class="info-row"><span>Mission window</span><strong>${esc(d.expedition.start_date||'—')} → ${esc(d.expedition.end_date||'—')}</strong></div><div class="info-row"><span>Tracked assets</span><strong>${s.assets_total}</strong></div><div class="info-row"><span>Locations</span><strong>${d.locations.length}</strong></div><div class="info-row"><span>Live GPS feeds</span><strong>${s.live_personnel+s.live_vehicles} trackers</strong></div><div class="info-row"><span>Data mode</span><strong>Durable Object live + offline queue</strong></div></div></div>
+      </div>`;
+    $$('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
+  }
+  function stat(label,value,detail,ico,kind=''){return `<div class="stat ${kind}"><div class="stat-head"><span class="stat-label">${label}</span><span class="stat-icon">${ico}</span></div><div class="stat-value">${value}</div><div class="stat-detail">${esc(detail)}</div></div>`}
+  function activityRow(a){return `<div class="activity-item"><div class="activity-icon">${({personnel:'◎',cargo:'▣',inventory:'▤',vehicle:'▱',incident:'△',asset:'◇',location:'⌖'})[a.category]||'•'}</div><div><strong>${esc(a.message)}</strong><span>${a.user_name?`By ${esc(a.user_name)}`:'System event'}</span></div><time>${fmtTime(a.created_at)}</time></div>`}
+
+  function renderMap(locations,vehicles,personnel=[]){
+    const fixed=locations.filter(x=>Number.isFinite(Number(x.latitude))&&Number.isFinite(Number(x.longitude)));
+    const vehiclePoints=vehicles.filter(v=>Number.isFinite(Number(v.latitude))&&Number.isFinite(Number(v.longitude)));
+    const peoplePoints=personnel.filter(p=>Number.isFinite(Number(p.live_latitude))&&Number.isFinite(Number(p.live_longitude)));
+    const coords=[...fixed.map(x=>[+x.latitude,+x.longitude]),...vehiclePoints.map(x=>[+x.latitude,+x.longitude]),...peoplePoints.map(x=>[+x.live_latitude,+x.live_longitude])];
+    if(!coords.length)return '<div class="empty"><div><strong>No mapped positions</strong>Add mission coordinates or start a live GPS feed.</div></div>';
+    const lats=coords.map(x=>x[0]),lons=coords.map(x=>x[1]);let minLat=Math.min(...lats),maxLat=Math.max(...lats),minLon=Math.min(...lons),maxLon=Math.max(...lons);if(minLat===maxLat){minLat-=.1;maxLat+=.1}if(minLon===maxLon){minLon-=.1;maxLon+=.1}
+    const pos=(lat,lon)=>({x:9+82*((lon-minLon)/(maxLon-minLon)),y:10+75*(1-(lat-minLat)/(maxLat-minLat))});
+    let lines='';const base=fixed.find(x=>/base|station/i.test(x.name))||fixed[0];if(base){const bp=pos(+base.latitude,+base.longitude);fixed.filter(x=>x.id!==base.id).slice(0,5).forEach(x=>{const q=pos(+x.latitude,+x.longitude),dx=q.x-bp.x,dy=q.y-bp.y,len=Math.sqrt(dx*dx+dy*dy),ang=Math.atan2(dy,dx)*180/Math.PI;lines+=`<i class="map-line" style="left:${bp.x}%;top:${bp.y}%;width:${len}%;transform:rotate(${ang}deg)"></i>`})}
+    const points=fixed.map(x=>{const q=pos(+x.latitude,+x.longitude);return `<div class="map-point" style="left:${q.x}%;top:${q.y}%"><div class="map-dot"><span>${/camp/i.test(x.type)?'▲':/station/i.test(x.type)?'⌂':'⌖'}</span></div><div class="map-label"><strong>${esc(x.name)}</strong><small>${esc(x.type)}</small></div></div>`}).join('');
+    const vpoints=vehiclePoints.map(v=>{const q=pos(+v.latitude,+v.longitude),live=!!v.telemetry_recorded_at;return `<div class="map-point vehicle ${live?'live':''}" style="left:${q.x}%;top:${q.y}%"><div class="map-dot"><span>▱</span></div><div class="map-label"><strong>${esc(v.code)} ${live?'• LIVE':''}</strong><small>${live?ago(v.telemetry_recorded_at):esc(v.location_name||v.status)} · ${n(v.fuel_percent)}% fuel</small></div></div>`}).join('');
+    const ppoints=peoplePoints.map(p=>{const q=pos(+p.live_latitude,+p.live_longitude);return `<div class="map-point person live" style="left:${q.x}%;top:${q.y}%"><div class="map-dot"><span>◎</span></div><div class="map-label"><strong>${esc(p.name)} • LIVE</strong><small>${ago(p.telemetry_recorded_at)}${p.accuracy_m!=null?` · ±${n(p.accuracy_m)}m`:''}</small></div></div>`}).join('');
+    return `<div class="map"><span class="map-grid-label a">LIVE OPS</span><span class="map-grid-label b">POLAR GRID</span>${lines}${points}${vpoints}${ppoints}<div class="map-legend"><span><i></i> Location</span><span><i class="v"></i> Vehicle</span><span><i class="p"></i> Person GPS</span></div></div>`;
+  }
+
+  async function loadLocations(){ return api(`/api/locations?expedition_id=${state.expeditionId}`); }
+  function locationOptions(locations,selected){ return `<option value="">Unassigned</option>`+locations.map(l=>`<option value="${l.id}" ${Number(selected)===l.id?'selected':''}>${esc(l.name)}</option>`).join(''); }
+  function modal(title,subtitle,body,wide=false){ $('#modalRoot').innerHTML=`<div class="modal-backdrop"><div class="modal ${wide?'wide':''}"><div class="modal-head"><div><span class="eyebrow">POLAROPS WORKFLOW</span><h2>${esc(title)}</h2>${subtitle?`<p>${esc(subtitle)}</p>`:''}</div><button class="modal-close">×</button></div>${body}</div></div>`; $('.modal-close').onclick=closeModal; $('.modal-backdrop').onclick=e=>{if(e.target.classList.contains('modal-backdrop'))closeModal()}; }
+  function closeModal(){ $('#modalRoot').innerHTML=''; if(state.deferredRealtime){state.deferredRealtime=false;clearTimeout(state.realtimeRender);state.realtimeRender=setTimeout(()=>renderView(),100)} }
+  function formVal(form,name){ return form.elements[name]?.value ?? ''; }
+  function numOrNull(v){ return v===''?null:Number(v); }
+
+  async function renderPersonnel(){
+    setHeader('Personnel','Accountability, live worker positions, authorized roster feeds and field check-ins.');
+    const [people,locs,feed]=await Promise.all([
+      api(`/api/personnel?expedition_id=${state.expeditionId}`),
+      loadLocations(),
+      api(`/api/integrations/workers/status?expedition_id=${state.expeditionId}`).catch(()=>({configured:false,workers:0}))
+    ]);
+    const external=people.filter(p=>(p.source||'').startsWith('feed:')).length;
+    const synthetic=people.filter(p=>+p.is_synthetic===1).length;
+    const live=people.filter(p=>p.telemetry_recorded_at).length;
+    $('#view').innerHTML=`
+      <div class="source-strip">
+        <div><span>Roster records</span><strong>${people.length}</strong></div>
+        <div><span>Live GPS workers</span><strong>${live}</strong></div>
+        <div><span>Authorized-feed workers</span><strong>${external}</strong></div>
+        <div><span>Demo/synthetic</span><strong>${synthetic}</strong></div>
+        <div class="source-note"><strong>${feed.configured?'AUTHORIZED FEED CONFIGURED':'NO EXTERNAL WORKER FEED'}</strong><span>${feed.configured?`Source: ${esc(feed.url_host||'operator endpoint')}`:'Public live worker rosters are not scraped. Connect an operator-authorized feed or use worker check-in/GPS.'}</span></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><h2>Personnel Roster</h2><p>${people.length} people registered to this expedition. Live positions come only from authorized devices/feeds.</p></div><div class="panel-actions"><input class="search" id="peopleSearch" placeholder="Search personnel…">${roleCan('commander','logistics')?'<button class="button secondary" id="syncWorkers">↻ Sync authorized workers</button><button class="button primary" id="addPerson">+ Add person</button>':''}</div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role / Team</th><th>Location</th><th>Status</th><th>Last check-in</th><th>Source</th><th>Clearance</th><th>Actions</th></tr></thead><tbody id="peopleRows">${people.map(p=>personRow(p)).join('')}</tbody></table></div></div>`;
+    const paint=(q='')=>{$('#peopleRows').innerHTML=people.filter(p=>[p.name,p.role,p.team,p.location_name,p.status,p.source].join(' ').toLowerCase().includes(q.toLowerCase())).map(personRow).join('')||'<tr><td colspan="8">No matching personnel.</td></tr>';wirePeople()};
+    $('#peopleSearch').oninput=e=>paint(e.target.value);
+    if($('#addPerson'))$('#addPerson').onclick=()=>openPersonForm(null,locs);
+    if($('#syncWorkers'))$('#syncWorkers').onclick=async()=>{
+      if(!feed.configured){
+        modal('Authorized worker feed not configured','PolarOps intentionally does not scrape public worker locations.',`<div class="notice-card"><strong>Configure an operator-controlled JSON feed</strong><p>Set <code>POLAROPS_OPERATIONS_FEED_URL</code> and optionally <code>POLAROPS_OPERATIONS_FEED_TOKEN</code> in your environment. The feed can provide locations/camps, worker roster fields, latitude/longitude and timestamps.</p><p>This keeps worker location data consent-based and organization-controlled.</p></div><div class="modal-actions"><button class="button primary" data-cancel>Close</button></div>`,true);$('[data-cancel]').onclick=closeModal;return;
+      }
+      const b=$('#syncWorkers');b.disabled=true;b.textContent='Syncing…';
+      try{const r=await api(`/api/integrations/workers/sync?expedition_id=${state.expeditionId}`,{method:'POST'});toast('Authorized worker feed synchronized',`${r.locations||0} locations · ${r.created} added · ${r.updated} updated · ${r.telemetry} live positions`);await renderPersonnel()}
+      catch(err){toast('Worker feed sync failed',err.message,'danger',5000);b.disabled=false;b.textContent='↻ Sync authorized workers'}
+    };
+    function wirePeople(){ $$('[data-checkin]').forEach(b=>b.onclick=()=>openCheckin(people.find(p=>p.id===+b.dataset.checkin),locs)); $$('[data-live-gps]').forEach(b=>b.onclick=()=>togglePersonnelGps(people.find(p=>p.id===+b.dataset.liveGps))); $$('[data-edit-person]').forEach(b=>b.onclick=()=>openPersonForm(people.find(p=>p.id===+b.dataset.editPerson),locs)); }
+    wirePeople();
+  }
+  function personRow(p){
+    const due=p.checkin_minutes!=null&&p.checkin_minutes>30,tracking=state.gpsPersonnelId===p.id;
+    const source=+p.is_synthetic===1?badge('Demo data','warn'):(p.source||'').startsWith('feed:')?badge('Authorized feed','info'):badge('Manual / device','good');
+    return `<tr><td><strong>${esc(p.name)}</strong><small>#P-${String(p.id).padStart(3,'0')}${p.external_id?` · ${esc(p.external_id)}`:''}</small></td><td><strong>${esc(p.role)}</strong><small>${esc(p.team||'No team')}</small></td><td><strong>${esc(p.location_name||'Unassigned')}</strong><small>${p.telemetry_recorded_at?`GPS ${ago(p.telemetry_recorded_at)} · ${esc(p.telemetry_source||'gps')}`:'No live GPS'}</small></td><td>${badge(p.status,due?'danger':statusKind(p.status))}</td><td><strong>${p.checkin_minutes==null?'—':`${p.checkin_minutes} min ago`}</strong><small>${fmtDate(p.last_checkin)}</small></td><td>${source}</td><td>${badge(p.clearance_status,statusKind(p.clearance_status))}</td><td><div class="row-actions"><button class="icon-btn" data-checkin="${p.id}">Check in</button><button class="icon-btn ${tracking?'live-action':''}" data-live-gps="${p.id}">${tracking?'Stop GPS':'Live GPS'}</button>${roleCan('commander','logistics')?`<button class="icon-btn" data-edit-person="${p.id}">Edit</button>`:''}</div></td></tr>`;
+  }
+  function openPersonForm(p,locs){
+    modal(p?'Edit personnel':'Add personnel',p?'Update team, location and readiness status.':'Register a person to the current expedition.',`<form id="personForm"><div class="form-grid"><div class="field"><label>Name</label><input name="name" required value="${esc(p?.name||'')}"></div><div class="field"><label>Role</label><input name="role" required value="${esc(p?.role||'')}"></div><div class="field"><label>Team</label><input name="team" value="${esc(p?.team||'')}"></div><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs,p?.location_id)}</select></div><div class="field"><label>Status</label><select name="status">${['Safe','Moving','Check-in due','Evacuating','Unknown'].map(x=>`<option ${p?.status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Clearance</label><select name="clearance_status">${['Cleared','Pending','Restricted'].map(x=>`<option ${p?.clearance_status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field full"><label>Contact</label><input name="contact" value="${esc(p?.contact||'')}" placeholder="Optional radio / satphone identifier"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">${p?'Save changes':'Add person'}</button></div></form>`);
+    $('[data-cancel]').onclick=closeModal; $('#personForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,payload={name:formVal(f,'name'),role:formVal(f,'role'),team:formVal(f,'team'),location_id:numOrNull(formVal(f,'location_id')),status:formVal(f,'status'),contact:formVal(f,'contact'),clearance_status:formVal(f,'clearance_status')};try{if(p)await api(`/api/personnel/${p.id}`,{method:'PATCH',body:JSON.stringify(payload)});else await api('/api/personnel',{method:'POST',body:JSON.stringify({expedition_id:state.expeditionId,...payload})});closeModal();toast(p?'Personnel updated':'Personnel added');renderPersonnel()}catch(err){toast('Save failed',err.message,'danger')}};
+  }
+  function openCheckin(p,locs){ modal('Personnel check-in',`${p.name} · ${p.role}`,`<form id="checkinForm"><div class="form-grid"><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs,p.location_id)}</select></div><div class="field"><label>Status</label><select name="status">${['Safe','Moving','Evacuating','Unknown'].map(x=>`<option ${p.status===x?'selected':''}>${x}</option>`).join('')}</select></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button good">Confirm check-in</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#checkinForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/personnel/${p.id}/checkin`,{method:'POST',body:JSON.stringify({location_id:numOrNull(formVal(f,'location_id')),status:formVal(f,'status')})});closeModal();toast('Check-in recorded',p.name);renderPersonnel()}catch(err){toast('Check-in failed',err.message,'danger')}}; }
+
+  function stopPersonnelGps(show=true){
+    if(state.gpsWatchId!=null&&navigator.geolocation)navigator.geolocation.clearWatch(state.gpsWatchId);
+    const previous=state.gpsPersonnelId;state.gpsWatchId=null;state.gpsPersonnelId=null;state.gpsLastSent=0;
+    if(show&&previous)toast('Live GPS stopped');
+  }
+  function togglePersonnelGps(person){
+    if(!person)return;
+    if(state.gpsPersonnelId===person.id){stopPersonnelGps();renderPersonnel();return}
+    if(!navigator.geolocation){toast('GPS unavailable','This browser does not expose geolocation.','danger');return}
+    stopPersonnelGps(false);state.gpsPersonnelId=person.id;state.gpsLastSent=0;toast('Starting live GPS',`${person.name} · allow location access in the browser.`,'info',4000);renderPersonnel();
+    state.gpsWatchId=navigator.geolocation.watchPosition(async position=>{
+      const now=Date.now();if(now-state.gpsLastSent<8000)return;state.gpsLastSent=now;
+      const c=position.coords;
+      try{await api('/api/telemetry/position',{method:'POST',body:JSON.stringify({expedition_id:state.expeditionId,entity_type:'personnel',entity_id:person.id,latitude:c.latitude,longitude:c.longitude,altitude_m:c.altitude,accuracy_m:c.accuracy,speed_kph:c.speed==null?null:Math.max(0,c.speed*3.6),heading:c.heading,source:'browser-gps',recorded_at:new Date(position.timestamp).toISOString()})})}
+      catch(err){if(navigator.onLine)toast('GPS upload failed',err.message,'danger')}
+    },err=>{stopPersonnelGps(false);toast('GPS permission/error',err.message,'danger',4500);if(state.view==='personnel')renderPersonnel()},{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
+  }
+
+  async function renderCargo(){
+    setHeader('Cargo','Chain-of-custody tracking from registration through field delivery.'); const [items,locs]=await Promise.all([api(`/api/cargo?expedition_id=${state.expeditionId}`),loadLocations()]);
+    $('#view').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Cargo Registry</h2><p>Track critical consignments, current location and destination.</p></div><div class="panel-actions"><input class="search" id="cargoSearch" placeholder="Cargo ID or item…"><button class="button secondary" id="scanCargo">▦ Scan / enter code</button>${roleCan('commander','logistics')?'<button class="button primary" id="addCargo">+ Add cargo</button>':''}</div></div><div class="table-wrap"><table><thead><tr><th>Cargo ID</th><th>Item</th><th>Priority</th><th>Current location</th><th>Destination</th><th>Status</th><th>Qty</th><th>Actions</th></tr></thead><tbody id="cargoRows">${items.map(c=>cargoRow(c)).join('')}</tbody></table></div></div>`;
+    const paint=(q='')=>{$('#cargoRows').innerHTML=items.filter(c=>[c.code,c.name,c.location_name,c.destination_name,c.status].join(' ').toLowerCase().includes(q.toLowerCase())).map(cargoRow).join('')||'<tr><td colspan="8">No matching cargo.</td></tr>';wire()};
+    function wire(){ $$('[data-move-cargo]').forEach(b=>b.onclick=()=>openCargoMove(items.find(x=>x.id===+b.dataset.moveCargo),locs)); $$('[data-cargo-history]').forEach(b=>b.onclick=()=>openCargoHistory(items.find(x=>x.id===+b.dataset.cargoHistory))); $$('[data-edit-cargo]').forEach(b=>b.onclick=()=>openCargoEdit(items.find(x=>x.id===+b.dataset.editCargo),locs)); }
+    $('#cargoSearch').oninput=e=>paint(e.target.value);$('#scanCargo').onclick=()=>openCargoScanner(items,locs);if($('#addCargo'))$('#addCargo').onclick=()=>openCargoCreate(locs);wire();
+  }
+  function cargoRow(c){return `<tr><td class="mono"><strong>${esc(c.code)}</strong></td><td><strong>${esc(c.name)}</strong><small>${esc(c.assigned_to||'Unassigned')}</small></td><td>${badge(c.priority,statusKind(c.priority))}</td><td>${esc(c.location_name||'Unknown')}</td><td>${esc(c.destination_name||'—')}</td><td>${badge(c.status,statusKind(c.status))}</td><td>${n(c.quantity)} ${esc(c.unit)}</td><td><div class="row-actions"><button class="icon-btn" data-move-cargo="${c.id}">Move</button>${roleCan('commander','logistics')?`<button class="icon-btn" data-edit-cargo="${c.id}">Edit</button>`:''}<button class="icon-btn" data-cargo-history="${c.id}">History</button></div></td></tr>`}
+  function openCargoCreate(locs){ modal('Register cargo','Create a trackable cargo unit and destination.',`<form id="cargoForm"><div class="form-grid"><div class="field"><label>Cargo ID</label><input name="code" required placeholder="CRG-200"></div><div class="field"><label>Item name</label><input name="name" required></div><div class="field"><label>Priority</label><select name="priority">${['Critical','High','Medium','Low'].map(x=>`<option>${x}</option>`).join('')}</select></div><div class="field"><label>Status</label><select name="status">${['Registered','In Transit','Delivered','Held'].map(x=>`<option>${x}</option>`).join('')}</select></div><div class="field"><label>Origin</label><select name="origin_location_id">${locationOptions(locs)}</select></div><div class="field"><label>Destination</label><select name="destination_location_id">${locationOptions(locs)}</select></div><div class="field"><label>Current location</label><select name="current_location_id">${locationOptions(locs)}</select></div><div class="field"><label>Assigned to</label><input name="assigned_to" placeholder="Team / custodian"></div><div class="field"><label>Quantity</label><input type="number" step="any" min="0" name="quantity" value="1"></div><div class="field"><label>Unit</label><input name="unit" value="unit"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Register cargo</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#cargoForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={expedition_id:state.expeditionId,code:formVal(f,'code').trim().toUpperCase(),name:formVal(f,'name'),priority:formVal(f,'priority'),origin_location_id:numOrNull(formVal(f,'origin_location_id')),destination_location_id:numOrNull(formVal(f,'destination_location_id')),current_location_id:numOrNull(formVal(f,'current_location_id')),status:formVal(f,'status'),quantity:Number(formVal(f,'quantity')||1),unit:formVal(f,'unit'),assigned_to:formVal(f,'assigned_to')};try{await api('/api/cargo',{method:'POST',body:JSON.stringify(p)});closeModal();toast('Cargo registered',p.code);renderCargo()}catch(err){toast('Registration failed',err.message,'danger')}}; }
+  function openCargoMove(c,locs){ modal('Update cargo movement',`${c.code} · ${c.name}`,`<form id="moveCargoForm"><div class="form-grid"><div class="field"><label>New location</label><select name="location_id" required>${locationOptions(locs,c.current_location_id)}</select></div><div class="field"><label>Status</label><select name="status">${['In Transit','Delivered','Held','Returned'].map(x=>`<option ${c.status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field full"><label>Custody / movement note</label><input name="note" placeholder="Received by Camp Alpha logistics"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Record movement</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#moveCargoForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{const r=await api(`/api/cargo/${c.id}/move`,{method:'POST',body:JSON.stringify({location_id:Number(formVal(f,'location_id')),status:formVal(f,'status'),note:formVal(f,'note')})});closeModal();toast('Cargo movement recorded',`${c.code} · ${r.status||formVal(f,'status')}`);renderCargo()}catch(err){toast('Movement failed',err.message,'danger')}}; }
+  function openCargoEdit(c,locs){ modal('Edit cargo',`${c.code} · shipment settings`,`<form id="editCargoForm"><div class="form-grid"><div class="field"><label>Item name</label><input name="name" value="${esc(c.name)}" required></div><div class="field"><label>Priority</label><select name="priority">${['Critical','High','Medium','Low'].map(x=>`<option ${c.priority===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Destination</label><select name="destination_location_id">${locationOptions(locs,c.destination_location_id)}</select></div><div class="field"><label>Assigned to</label><input name="assigned_to" value="${esc(c.assigned_to||'')}"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Save cargo</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#editCargoForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/cargo/${c.id}`,{method:'PATCH',body:JSON.stringify({name:formVal(f,'name'),priority:formVal(f,'priority'),destination_location_id:numOrNull(formVal(f,'destination_location_id')),assigned_to:formVal(f,'assigned_to')})});closeModal();toast('Cargo updated',c.code);renderCargo()}catch(err){toast('Cargo update failed',err.message,'danger')}}; }
+  async function openCargoHistory(c){ try{const ev=await api(`/api/cargo/${c.id}/events`); modal(`Cargo history — ${c.code}`,c.name,`<div class="incident-timeline">${ev.length?ev.map(x=>`<div class="timeline-event"><time>${fmtTime(x.created_at)}</time><div class="timeline-track"><i></i></div><p><strong>${esc(x.event_type)}</strong><br>${esc(x.location_name||'Unknown location')} · ${esc(x.note||'')}</p></div>`).join(''):'<div class="empty">No movement events.</div>'}</div>`,true)}catch(err){toast('History failed',err.message,'danger')} }
+  function openCargoScanner(items,locs){
+    modal('Scan cargo','Use a supported camera scanner or enter a cargo ID manually.',`<div class="scanner" id="scanner"><div class="scanner-overlay"><strong>Camera scanner ready when supported</strong><span>BarcodeDetector requires HTTPS or localhost.</span></div></div><form id="scanForm"><div class="field"><label>Cargo ID / QR payload</label><input name="code" autocomplete="off" placeholder="CRG-102" required></div><div class="modal-actions"><button type="button" class="button secondary" id="cameraScan">Start camera</button><button class="button primary">Find cargo</button></div></form>`);
+    let stream=null;$('.modal-close').onclick=()=>{stream?.getTracks().forEach(t=>t.stop());closeModal()};
+    $('#cameraScan').onclick=async()=>{ if(!('BarcodeDetector'in window)){toast('Camera scanning unavailable','Enter the cargo ID manually in this browser.','warn');return;} try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});const v=document.createElement('video');v.autoplay=true;v.playsInline=true;v.srcObject=stream;$('#scanner').prepend(v);const det=new BarcodeDetector({formats:['qr_code','code_128','data_matrix']});const loop=async()=>{if(!stream)return;try{const codes=await det.detect(v);if(codes[0]){form.elements.code.value=codes[0].rawValue;stream.getTracks().forEach(t=>t.stop());stream=null;return}}catch{}requestAnimationFrame(loop)};requestAnimationFrame(loop)}catch(err){toast('Camera unavailable',err.message,'danger')}};
+    const form=$('#scanForm');form.onsubmit=e=>{e.preventDefault();const code=formVal(form,'code').trim().toUpperCase();const c=items.find(x=>x.code.toUpperCase()===code);if(!c){toast('Cargo not found',code,'danger');return;}stream?.getTracks().forEach(t=>t.stop());closeModal();openCargoMove(c,locs)};
+  }
+
+  async function renderInventory(){
+    setHeader('Inventory','Safety stock, consumption, resupply and field resource control.'); const [items,locs]=await Promise.all([api(`/api/inventory?expedition_id=${state.expeditionId}`),loadLocations()]);
+    $('#view').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Inventory Control</h2><p>Threshold-based resource management across mission locations.</p></div><div class="panel-actions"><input class="search" id="invSearch" placeholder="Search inventory…">${roleCan('commander','logistics')?'<button class="button primary" id="addInv">+ Add item</button>':''}</div></div><div class="card-grid" id="invGrid">${items.map(invCard).join('')}</div></div>`;
+    const paint=(q='')=>{$('#invGrid').innerHTML=items.filter(x=>[x.name,x.sku,x.location_name].join(' ').toLowerCase().includes(q.toLowerCase())).map(invCard).join('')||'<div class="empty"><div><strong>No matching items</strong>Change the search term.</div></div>';wire()};
+    function wire(){ $$('[data-adjust-inv]').forEach(b=>b.onclick=()=>openInvAdjust(items.find(x=>x.id===+b.dataset.adjustInv))); $$('[data-edit-inv]').forEach(b=>b.onclick=()=>openInvEdit(items.find(x=>x.id===+b.dataset.editInv),locs)); }
+    $('#invSearch').oninput=e=>paint(e.target.value);if($('#addInv'))$('#addInv').onclick=()=>openInvCreate(locs);wire();
+  }
+  function invCard(i){ const low=+i.quantity<+i.min_quantity, pct=Math.max(0,Math.min(100,(+i.quantity/Math.max(+i.min_quantity,1))*70));return `<article class="item-card"><div class="item-card-head"><div><span class="code mono">${esc(i.sku)}</span><h3>${esc(i.name)}</h3></div>${badge(low?'LOW':'OK',low?'danger':'good')}</div><p>${esc(i.location_name||'Unassigned location')} · Minimum ${n(i.min_quantity)} ${esc(i.unit)}</p><div class="metric-row"><div class="metric-big">${n(i.quantity)} <small>${esc(i.unit)}</small></div><span class="${low?'danger-text':'good-text'}">${low?'Below safety stock':'Within threshold'}</span></div><div class="progress"><i class="${low?'low':''}" style="width:${pct}%"></i></div><div class="card-actions"><button class="button secondary small" data-adjust-inv="${i.id}">Adjust stock</button>${roleCan('commander','logistics')?`<button class="button ghost small" data-edit-inv="${i.id}">Settings</button>`:''}</div></article>`}
+  function openInvCreate(locs){ modal('Add inventory item','Register a resource and its minimum safety stock.',`<form id="invForm"><div class="form-grid"><div class="field"><label>SKU</label><input name="sku" required placeholder="INV-MED-02"></div><div class="field"><label>Item</label><input name="name" required></div><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs)}</select></div><div class="field"><label>Unit</label><input name="unit" value="units"></div><div class="field"><label>Opening quantity</label><input type="number" step="any" name="quantity" value="0"></div><div class="field"><label>Minimum quantity</label><input type="number" step="any" name="min_quantity" value="0"></div><div class="field full"><label>Expiry date</label><input type="date" name="expiry_date"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Add item</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#invForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={expedition_id:state.expeditionId,sku:formVal(f,'sku').trim().toUpperCase(),name:formVal(f,'name'),location_id:numOrNull(formVal(f,'location_id')),quantity:Number(formVal(f,'quantity')||0),min_quantity:Number(formVal(f,'min_quantity')||0),unit:formVal(f,'unit'),expiry_date:formVal(f,'expiry_date')||null};try{await api('/api/inventory',{method:'POST',body:JSON.stringify(p)});closeModal();toast('Inventory item added',p.name);renderInventory()}catch(err){toast('Save failed',err.message,'danger')}}; }
+  function openInvAdjust(i){ modal('Adjust inventory',`${i.name} · current ${n(i.quantity)} ${i.unit}`,`<form id="adjForm"><div class="form-grid"><div class="field"><label>Adjustment</label><input type="number" step="any" name="delta" required placeholder="Use + for resupply, - for consumption"></div><div class="field"><label>Reason</label><select name="reason"><option>Resupply</option><option>Field consumption</option><option>Transfer correction</option><option>Damaged / lost</option><option>Stock count correction</option></select></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Record adjustment</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#adjForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/inventory/${i.id}/adjust`,{method:'POST',body:JSON.stringify({delta:Number(formVal(f,'delta')),reason:formVal(f,'reason')})});closeModal();toast('Inventory adjusted',i.name);renderInventory()}catch(err){toast('Adjustment failed',err.message,'danger')}}; }
+  function openInvEdit(i,locs){ modal('Inventory settings',`${i.sku} · ${i.name}`,`<form id="editInvForm"><div class="form-grid"><div class="field"><label>Item name</label><input name="name" value="${esc(i.name)}" required></div><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs,i.location_id)}</select></div><div class="field"><label>Minimum safety stock</label><input type="number" step="any" name="min_quantity" value="${n(i.min_quantity)}"></div><div class="field"><label>Unit</label><input name="unit" value="${esc(i.unit)}"></div><div class="field full"><label>Expiry date</label><input type="date" name="expiry_date" value="${esc(i.expiry_date||'')}"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Save settings</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#editInvForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/inventory/${i.id}`,{method:'PATCH',body:JSON.stringify({name:formVal(f,'name'),location_id:numOrNull(formVal(f,'location_id')),min_quantity:Number(formVal(f,'min_quantity')||0),unit:formVal(f,'unit'),expiry_date:formVal(f,'expiry_date')||null})});closeModal();toast('Inventory settings updated',i.name);renderInventory()}catch(err){toast('Update failed',err.message,'danger')}}; }
+
+  async function renderVehicles(){
+    setHeader('Vehicles','Fleet readiness, live telemetry, fuel posture and response range.');const [items,locs]=await Promise.all([api(`/api/vehicles?expedition_id=${state.expeditionId}`),loadLocations()]);
+    const simRunning=!!state.vehicleSimTimer;
+    $('#view').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Vehicle Fleet</h2><p>Operational response assets with latest GPS telemetry.</p></div><div class="panel-actions">${roleCan('commander','logistics')?`<button class="button ${simRunning?'danger':'secondary'}" id="vehicleSimulator">${simRunning?'■ Stop live simulation':'▶ Start live simulation'}</button><button class="button primary" id="addVehicle">+ Add vehicle</button>`:''}</div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Vehicle</th><th>Location</th><th>Status</th><th>Fuel</th><th>Live position</th><th>Speed</th><th>Range</th><th>Actions</th></tr></thead><tbody>${items.map(v=>`<tr><td class="mono"><strong>${esc(v.code)}</strong></td><td><strong>${esc(v.name)}</strong><small>${esc(v.type)}</small></td><td>${esc(v.location_name||'Unassigned')}</td><td>${badge(v.status,statusKind(v.status))}</td><td>${badge(`${n(v.fuel_percent)}%`,+v.fuel_percent<30?'danger':+v.fuel_percent<50?'warn':'good')}</td><td>${v.telemetry_recorded_at?`<strong class="good-text">● LIVE</strong><small>${n(v.latitude,5)}, ${n(v.longitude,5)} · ${ago(v.telemetry_recorded_at)}</small>`:'<span class="muted">No GPS feed</span>'}</td><td>${v.speed_kph!=null?`${n(v.speed_kph,1)} km/h`:'—'}</td><td>${n(v.range_km)} km</td><td>${roleCan('commander','logistics')?`<button class="icon-btn" data-edit-vehicle="${v.id}">Update</button>`:'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
+    if($('#addVehicle'))$('#addVehicle').onclick=()=>openVehicleForm(null,locs);$$('[data-edit-vehicle]').forEach(btn=>btn.onclick=()=>openVehicleForm(items.find(x=>x.id===+btn.dataset.editVehicle),locs));if($('#vehicleSimulator'))$('#vehicleSimulator').onclick=()=>toggleVehicleSimulation(items);
+  }
+  function stopVehicleSimulation(show=true){if(state.vehicleSimTimer)clearInterval(state.vehicleSimTimer);const had=state.vehicleSimId;state.vehicleSimTimer=null;state.vehicleSimId=null;state.vehicleSimStep=0;state.vehicleSimBase=null;if(show&&had)toast('Vehicle simulation stopped')}
+  function toggleVehicleSimulation(items){
+    if(state.vehicleSimTimer){stopVehicleSimulation();renderVehicles();return}
+    const vehicle=items.find(v=>v.code==='V03'&&v.status.toLowerCase()==='operational')||items.find(v=>v.status.toLowerCase()==='operational'&&Number.isFinite(Number(v.latitude))&&Number.isFinite(Number(v.longitude)));
+    if(!vehicle||!Number.isFinite(Number(vehicle.latitude))||!Number.isFinite(Number(vehicle.longitude))){toast('Simulation unavailable','Add coordinates to an operational vehicle location first.','danger');return}
+    state.vehicleSimId=vehicle.id;state.vehicleSimStep=0;state.vehicleSimBase={lat:+vehicle.latitude,lon:+vehicle.longitude,fuel:+vehicle.fuel_percent};
+    const tick=async()=>{state.vehicleSimStep++;const q=state.vehicleSimStep,base=state.vehicleSimBase;const lat=base.lat+0.012*Math.sin(q*.38),lon=base.lon+0.020*Math.cos(q*.34),fuel=Math.max(8,base.fuel-q*.18),speed=18+7*Math.abs(Math.sin(q*.5)),heading=(q*23)%360;try{await api('/api/telemetry/position',{method:'POST',body:JSON.stringify({expedition_id:state.expeditionId,entity_type:'vehicle',entity_id:vehicle.id,latitude:lat,longitude:lon,accuracy_m:4.5,speed_kph:speed,heading,fuel_percent:fuel,source:'demo-simulator',recorded_at:new Date().toISOString()})})}catch(err){if(navigator.onLine)toast('Simulator update failed',err.message,'danger')}};
+    tick();state.vehicleSimTimer=setInterval(tick,3000);toast('Live vehicle feed started',`${vehicle.code} publishes GPS every 3 seconds.`,'good',4200);renderVehicles();
+  }
+  function openVehicleForm(v,locs){ modal(v?'Update vehicle':'Add vehicle',v?`${v.code} · ${v.name}`:'Register a transport or response vehicle.',`<form id="vehicleForm"><div class="form-grid">${!v?`<div class="field"><label>Code</label><input name="code" required placeholder="V05"></div>`:''}<div class="field"><label>Name</label><input name="name" required value="${esc(v?.name||'')}"></div><div class="field"><label>Type</label><input name="type" value="${esc(v?.type||'Ground')}"></div><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs,v?.location_id)}</select></div><div class="field"><label>Status</label><select name="status">${['Operational','Maintenance','Unavailable','Deployed'].map(x=>`<option ${v?.status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Fuel %</label><input type="number" min="0" max="100" step="1" name="fuel_percent" value="${n(v?.fuel_percent??100)}"></div><div class="field"><label>Range km</label><input type="number" min="0" step="any" name="range_km" value="${n(v?.range_km??0)}"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">${v?'Save vehicle':'Add vehicle'}</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#vehicleForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={name:formVal(f,'name'),type:formVal(f,'type'),location_id:numOrNull(formVal(f,'location_id')),status:formVal(f,'status'),fuel_percent:Number(formVal(f,'fuel_percent')),range_km:Number(formVal(f,'range_km'))};try{if(v)await api(`/api/vehicles/${v.id}`,{method:'PATCH',body:JSON.stringify(p)});else await api('/api/vehicles',{method:'POST',body:JSON.stringify({expedition_id:state.expeditionId,code:formVal(f,'code').trim().toUpperCase(),...p})});closeModal();toast(v?'Vehicle updated':'Vehicle added');renderVehicles()}catch(err){toast('Vehicle save failed',err.message,'danger')}}; }
+
+  async function renderAssets(){
+    setHeader('Assets','Track reusable expedition equipment, assignment and current location.');const [items,locs,people]=await Promise.all([api(`/api/assets?expedition_id=${state.expeditionId}`),loadLocations(),api(`/api/personnel?expedition_id=${state.expeditionId}`)]);
+    $('#view').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Asset Register</h2><p>Reusable scientific, communications, power and field equipment.</p></div><div class="panel-actions"><input class="search" id="assetSearch" placeholder="Asset code or name…">${roleCan('commander','logistics')?'<button class="button primary" id="addAsset">+ Add asset</button>':''}</div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Asset</th><th>Category</th><th>Location</th><th>Status</th><th>Assigned to</th><th>Serial</th><th>Actions</th></tr></thead><tbody id="assetRows">${items.map(assetRow).join('')}</tbody></table></div></div>`;
+    const paint=q=>{$('#assetRows').innerHTML=items.filter(x=>[x.code,x.name,x.category,x.location_name,x.assigned_to_name].join(' ').toLowerCase().includes(q.toLowerCase())).map(assetRow).join('');wire()};
+    function wire(){$$('[data-edit-asset]').forEach(b=>b.onclick=()=>openAssetForm(items.find(x=>x.id===+b.dataset.editAsset),locs,people))}$('#assetSearch').oninput=e=>paint(e.target.value);if($('#addAsset'))$('#addAsset').onclick=()=>openAssetForm(null,locs,people);wire();
+  }
+  function assetRow(a){return `<tr><td class="mono"><strong>${esc(a.code)}</strong></td><td>${esc(a.name)}</td><td>${esc(a.category)}</td><td>${esc(a.location_name||'Unassigned')}</td><td>${badge(a.status,statusKind(a.status))}</td><td>${esc(a.assigned_to_name||'—')}</td><td class="mono">${esc(a.serial_number||'—')}</td><td>${roleCan('commander','logistics')?`<button class="icon-btn" data-edit-asset="${a.id}">Update</button>`:'—'}</td></tr>`}
+  function openAssetForm(a,locs,people){const personOpts='<option value="">Unassigned</option>'+people.map(p=>`<option value="${p.id}" ${a?.assigned_to_personnel_id===p.id?'selected':''}>${esc(p.name)}</option>`).join('');modal(a?'Update asset':'Add asset',a?`${a.code} · ${a.name}`:'Register reusable equipment.',`<form id="assetForm"><div class="form-grid">${!a?'<div class="field"><label>Asset code</label><input name="code" required placeholder="AST-006"></div>':''}<div class="field"><label>Name</label><input name="name" required value="${esc(a?.name||'')}"></div><div class="field"><label>Category</label><input name="category" value="${esc(a?.category||'Equipment')}"></div><div class="field"><label>Location</label><select name="location_id">${locationOptions(locs,a?.location_id)}</select></div><div class="field"><label>Status</label><select name="status">${['Available','Deployed','Maintenance','Unavailable'].map(x=>`<option ${a?.status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Assigned to</label><select name="assigned_to_personnel_id">${personOpts}</select></div><div class="field full"><label>Serial number</label><input name="serial_number" value="${esc(a?.serial_number||'')}"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">${a?'Save asset':'Add asset'}</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#assetForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={name:formVal(f,'name'),category:formVal(f,'category'),location_id:numOrNull(formVal(f,'location_id')),status:formVal(f,'status'),serial_number:formVal(f,'serial_number'),assigned_to_personnel_id:numOrNull(formVal(f,'assigned_to_personnel_id'))};try{if(a)await api(`/api/assets/${a.id}`,{method:'PATCH',body:JSON.stringify(p)});else await api('/api/assets',{method:'POST',body:JSON.stringify({expedition_id:state.expeditionId,code:formVal(f,'code').trim().toUpperCase(),...p})});closeModal();toast(a?'Asset updated':'Asset registered');renderAssets()}catch(err){toast('Asset save failed',err.message,'danger')}};}
+
+  async function renderEmergency(){
+    setHeader('Emergency Response','Incident command, responder assignment and operational timeline.');const incidents=await api(`/api/incidents?expedition_id=${state.expeditionId}`);const active=incidents.find(i=>!['resolved','closed'].includes(i.status.toLowerCase()));
+    if(!active){ $('#view').innerHTML=`<div class="panel sos-empty"><div class="sos-symbol">△</div><h2>No active incidents</h2><p>PolarOps is continuously maintaining personnel, inventory, vehicle and location context so the commander can build a response picture immediately when an SOS is raised.</p><button class="button danger" id="emptySOS">Trigger emergency</button></div>${incidents.length?`<div class="panel" style="margin-top:13px"><div class="panel-head"><div><h2>Incident History</h2><p>${incidents.length} incidents recorded.</p></div></div><div class="table-wrap"><table><thead><tr><th>Code</th><th>Title</th><th>Location</th><th>Severity</th><th>Status</th><th>Created</th></tr></thead><tbody>${incidents.map(i=>`<tr><td class="mono">${esc(i.code)}</td><td>${esc(i.title)}</td><td>${esc(i.location_name||'—')}</td><td>${badge(i.severity,statusKind(i.severity))}</td><td>${badge(i.status,statusKind(i.status))}</td><td>${fmtDate(i.created_at)}</td></tr>`).join('')}</tbody></table></div></div>`:''}`;$('#emptySOS').onclick=openIncidentCreate;return; }
+    const d=await api(`/api/incidents/${active.id}`), i=d.incident, nv=d.nearest_vehicle, meds=d.medical_inventory.reduce((a,x)=>a+Number(x.quantity),0);
+    $('#view').innerHTML=`<div class="incident-layout"><div class="incident-hero"><div class="incident-title"><div><span class="eyebrow">${esc(i.code)} · ${esc(i.status)}</span><h2>${esc(i.title)}</h2><small>${esc(i.type)} · ${fmtDate(i.created_at)}</small></div>${badge(i.severity,'danger')}</div><div class="incident-kpis"><div class="incident-kpi"><strong>${i.affected_count||d.personnel_at_location.length}</strong><span>Personnel affected</span></div><div class="incident-kpi"><strong>${esc(nv?.vehicle?.code||i.vehicle_code||'—')}</strong><span>Nearest / assigned vehicle</span></div><div class="incident-kpi"><strong>${nv?`${n(nv.distance_km,1)} km`:'—'}</strong><span>Response distance</span></div><div class="incident-kpi"><strong>${n(meds)}</strong><span>Medical stock units</span></div></div><div class="recommendation"><strong>Recommended action</strong><p>${nv?`Dispatch ${esc(nv.vehicle.code)} from ${esc(nv.vehicle.location_name||'its current location')}. It has ${n(nv.vehicle.fuel_percent)}% fuel and an estimated straight-line response distance of ${n(nv.distance_km,1)} km.`:'No operational vehicle with mapped coordinates is currently available. Escalate to alternate transport.'}</p></div><div class="card-actions" style="margin-top:14px">${roleCan('commander','logistics')&&i.status==='Active'?'<button class="button good" id="dispatch">Dispatch nearest response vehicle</button>':''}${roleCan('commander')?'<button class="button secondary" id="resolve">Mark resolved</button>':''}<button class="button ghost" id="addEvent">Add timeline note</button></div><div class="incident-timeline"><h3 style="font-size:12px">Incident timeline</h3>${d.events.map(ev=>`<div class="timeline-event"><time>${fmtTime(ev.created_at)}</time><div class="timeline-track"><i></i></div><p><strong>${esc(ev.event_type)}</strong><br>${esc(ev.note)}${ev.user_name?` · ${esc(ev.user_name)}`:''}</p></div>`).join('')}</div></div>
+      <aside class="panel"><div class="panel-head"><div><h2>Incident Context</h2><p>Resources automatically assembled from mission data.</p></div></div><div class="info-list"><div class="info-row"><span>Location</span><strong>${esc(i.location_name||'Unknown')}</strong></div><div class="info-row"><span>Status</span><strong>${esc(i.status)}</strong></div><div class="info-row"><span>Assigned vehicle</span><strong>${esc(i.vehicle_code||'Not assigned')}</strong></div><div class="info-row"><span>People at location</span><strong>${d.personnel_at_location.length}</strong></div><div class="info-row"><span>Medical inventory lines</span><strong>${d.medical_inventory.length}</strong></div></div><h3 style="font-size:11px;margin-top:18px">Personnel at incident location</h3><div class="activity-list">${d.personnel_at_location.length?d.personnel_at_location.map(p=>`<div class="activity-item"><div class="activity-icon">◎</div><div><strong>${esc(p.name)}</strong><span>${esc(p.role)} · ${esc(p.status)}</span></div></div>`).join(''):'<div class="empty" style="min-height:120px">No roster members assigned to this location.</div>'}</div></aside></div>`;
+    if($('#dispatch'))$('#dispatch').onclick=async()=>{try{const r=await api(`/api/incidents/${i.id}/dispatch`,{method:'POST'});toast('Response dispatched',`${r.vehicle_code} · ${r.distance_km} km`);renderEmergency()}catch(err){toast('Dispatch failed',err.message,'danger')}};
+    if($('#resolve'))$('#resolve').onclick=async()=>{if(!confirm(`Resolve ${i.code}?`))return;try{await api(`/api/incidents/${i.id}/resolve`,{method:'POST'});toast('Incident resolved',i.code);renderEmergency()}catch(err){toast('Resolve failed',err.message,'danger')}};
+    $('#addEvent').onclick=()=>openIncidentNote(i);
+  }
+  async function openIncidentCreate(){ const locs=await loadLocations(); modal('Trigger emergency','Create an incident and assemble response context immediately.',`<form id="incidentForm"><div class="form-grid"><div class="field"><label>Incident title</label><input name="title" value="Field Emergency" required></div><div class="field"><label>Type</label><select name="type"><option>Field Emergency</option><option>Medical</option><option>Vehicle</option><option>Weather</option><option>Missing Personnel</option><option>Fire</option></select></div><div class="field"><label>Severity</label><select name="severity"><option>Critical</option><option selected>High</option><option>Medium</option><option>Low</option></select></div><div class="field"><label>Location</label><select name="location_id" required>${locationOptions(locs)}</select></div><div class="field"><label>Personnel affected</label><input type="number" name="affected_count" min="0" value="0"></div><div class="field full"><label>Description</label><textarea name="description" placeholder="What happened and what is known right now?"></textarea></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button danger">Trigger incident</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#incidentForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={expedition_id:state.expeditionId,title:formVal(f,'title'),type:formVal(f,'type'),severity:formVal(f,'severity'),location_id:Number(formVal(f,'location_id')),description:formVal(f,'description'),affected_count:Number(formVal(f,'affected_count')||0)};if(!p.location_id){toast('Location required','Select the incident location.','danger');return}try{const r=await api('/api/incidents',{method:'POST',body:JSON.stringify(p)});closeModal();state.view='emergency';$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view==='emergency'));toast('Emergency activated',r.code,'danger');renderEmergency()}catch(err){toast('Incident creation failed',err.message,'danger')}}; }
+  function openIncidentNote(i){ modal('Add incident timeline note',i.code,`<form id="eventForm"><div class="field"><label>Event type</label><input name="event_type" value="Update"></div><div class="field"><label>Operational note</label><textarea name="note" required placeholder="Response team reached staging point…"></textarea></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Add note</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#eventForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/incidents/${i.id}/events`,{method:'POST',body:JSON.stringify({event_type:formVal(f,'event_type'),note:formVal(f,'note')})});closeModal();toast('Timeline updated');renderEmergency()}catch(err){toast('Update failed',err.message,'danger')}}; }
+
+  async function renderNetwork(){
+    setHeader('Antarctic Network','Official public facilities reference data, live environmental conditions and mission-base import.');
+    const [sources,data]=await Promise.all([
+      api('/api/data-sources'),
+      api('/api/public/facilities?limit=1000')
+    ]);
+    const facilities=data.items||[], countries=data.countries||[];
+    const comnap=(sources.sources||[]).find(x=>x.name==='COMNAP Facilities');
+    $('#view').innerHTML=`
+      <div class="source-strip network-source-strip">
+        <div><span>Public facilities</span><strong>${data.total||0}</strong></div>
+        <div><span>Countries/programmes</span><strong>${countries.length}</strong></div>
+        <div><span>Facility source</span><strong>COMNAP</strong></div>
+        <div><span>Current weather</span><strong>Open-Meteo</strong></div>
+        <div class="source-note"><strong>${esc(comnap?.last_status||'Never synced')}</strong><span>${comnap?.last_sync?`Last facility sync ${fmtDate(comnap.last_sync)}`:'Sync the official COMNAP facilities CSV to populate the global directory.'}</span></div>
+      </div>
+      <section class="panel"><div class="panel-head"><div><h2>Antarctic Facilities Directory</h2><p>Reference facilities from national Antarctic programmes. This directory is public infrastructure metadata—not permission to use another operator's facility.</p></div><div class="panel-actions"><input class="search" id="facilitySearch" placeholder="Station, country or programme…"><select class="search" id="facilityCountry"><option value="">All countries</option>${countries.map(c=>`<option value="${esc(c.country)}">${esc(c.country)} (${c.count})</option>`).join('')}</select>${roleCan('commander','logistics')?'<button class="button secondary" id="syncFacilities">↻ Sync COMNAP</button>':''}</div></div>
+        ${facilities.length?`<div class="table-wrap"><table><thead><tr><th>Facility</th><th>Country / Programme</th><th>Type</th><th>Operation</th><th>Coordinates</th><th>Current conditions</th><th>Actions</th></tr></thead><tbody id="facilityRows"></tbody></table></div>`:`<div class="empty" style="min-height:320px"><div><strong>No public facilities synchronized yet</strong>Press “Sync COMNAP” to download the official COMNAP Antarctic Facilities List into PolarOps. Internet access is required for the first sync.</div></div>`}
+      </section>
+      <section class="panel source-disclaimer" style="margin-top:13px"><div class="panel-head"><div><h2>Data boundaries</h2><p>Keep public reference data separate from private operational data.</p></div></div><div class="data-boundary-grid"><div><strong>Public reference</strong><span>Facility names, operators, coordinates and status from COMNAP.</span></div><div><strong>Live environment</strong><span>Current model conditions for facility coordinates from Open-Meteo; not a station instrument feed.</span></div><div><strong>Workers</strong><span>Live worker rosters/locations come only from your authorized feed, field check-ins or consented device GPS. PolarOps does not scrape people.</span></div></div></section>`;
+    if(facilities.length){
+      const paint=()=>{
+        const q=($('#facilitySearch')?.value||'').toLowerCase(), country=$('#facilityCountry')?.value||'';
+        const shown=facilities.filter(f=>(!country||f.country===country)&&[f.name,f.country,f.programme,f.facility_type,f.status].join(' ').toLowerCase().includes(q));
+        $('#facilityRows').innerHTML=shown.map(f=>facilityRow(f)).join('')||'<tr><td colspan="7">No matching facilities.</td></tr>';
+        $$('[data-facility-weather]').forEach(b=>b.onclick=()=>openFacilityWeather(facilities.find(x=>x.id===+b.dataset.facilityWeather)));
+        $$('[data-facility-import]').forEach(b=>b.onclick=()=>importFacility(facilities.find(x=>x.id===+b.dataset.facilityImport)));
+      };
+      $('#facilitySearch').oninput=paint;$('#facilityCountry').onchange=paint;paint();
+    }
+    if($('#syncFacilities'))$('#syncFacilities').onclick=async()=>{
+      const b=$('#syncFacilities');b.disabled=true;let offset=0,total=0;
+      try{
+        while(true){
+          b.textContent=`Syncing official data… ${total}`;
+          const r=await api(`/api/public/facilities/sync?offset=${offset}&limit=35`,{method:'POST'});
+          total+=r.synced||0;offset=r.next_offset||offset;
+          if(!r.has_more)break;
+        }
+        toast('COMNAP facilities synchronized',`${total} facilities loaded`);await renderNetwork();
+      } catch(err){toast('COMNAP sync failed',err.message,'danger',6000);b.disabled=false;b.textContent='↻ Sync COMNAP'}
+    };
+  }
+  function facilityRow(f){
+    const weather=f.weather_observed_at?`<strong>${f.temperature_c==null?'—':`${n(f.temperature_c,1)} °C`}</strong><small>${f.wind_speed_kph==null?'':`${n(f.wind_speed_kph,1)} km/h wind · `}${fmtDate(f.weather_observed_at)} UTC</small>`:'<span class="muted">Not loaded</span>';
+    return `<tr><td><strong>${esc(f.name)}</strong><small>${esc(f.status||'Status not supplied')}</small></td><td><strong>${esc(f.country||'—')}</strong><small>${esc(f.programme||'Programme not supplied')}</small></td><td>${badge(f.facility_type||'Facility','info')}</td><td>${esc(f.seasonality||'—')}</td><td class="mono"><strong>${f.latitude==null?'—':n(f.latitude,5)}</strong><small>${f.longitude==null?'—':n(f.longitude,5)}</small></td><td>${weather}</td><td><div class="row-actions"><button class="icon-btn" data-facility-weather="${f.id}">Weather</button>${roleCan('commander','logistics')?`<button class="icon-btn" data-facility-import="${f.id}">Add to mission</button>`:''}</div></td></tr>`;
+  }
+  async function openFacilityWeather(f){
+    if(!f)return;
+    modal(`Current conditions — ${f.name}`,`${f.country||'Antarctica'} · ${f.programme||'National Antarctic Programme'}`,`<div class="empty" style="min-height:220px"><div><strong>Loading current conditions…</strong>Querying weather model at the facility coordinates.</div></div>`,true);
+    try{
+      const r=await api(`/api/public/facilities/${f.id}/weather?force=true`),w=r.weather;
+      modal(`Current conditions — ${f.name}`,`${f.country||'Antarctica'} · ${n(f.latitude,4)}, ${n(f.longitude,4)}`,`
+        <div class="weather-grid">
+          <div><span>Temperature</span><strong>${w.temperature_c==null?'—':`${n(w.temperature_c,1)} °C`}</strong></div>
+          <div><span>Feels like</span><strong>${w.apparent_temperature_c==null?'—':`${n(w.apparent_temperature_c,1)} °C`}</strong></div>
+          <div><span>Humidity</span><strong>${w.relative_humidity==null?'—':`${n(w.relative_humidity)}%`}</strong></div>
+          <div><span>Wind</span><strong>${w.wind_speed_kph==null?'—':`${n(w.wind_speed_kph,1)} km/h`}</strong></div>
+          <div><span>Gusts</span><strong>${w.wind_gusts_kph==null?'—':`${n(w.wind_gusts_kph,1)} km/h`}</strong></div>
+          <div><span>Pressure</span><strong>${w.surface_pressure_hpa==null?'—':`${n(w.surface_pressure_hpa,1)} hPa`}</strong></div>
+        </div><div class="notice-card" style="margin-top:14px"><strong>${esc(w.source)}</strong><p>Observed/model timestamp: ${esc(w.observed_at||'—')} UTC. This is model-based current weather for the coordinates, not a direct sensor reading from the station.</p></div><div class="modal-actions"><button class="button primary" data-cancel>Close</button></div>`,true);$('[data-cancel]').onclick=closeModal;
+    }catch(err){modal(`Weather unavailable — ${f.name}`,'The external weather source could not be reached.',`<div class="notice-card danger"><strong>Refresh failed</strong><p>${esc(err.message)}</p></div><div class="modal-actions"><button class="button primary" data-cancel>Close</button></div>`,true);$('[data-cancel]').onclick=closeModal;}
+  }
+  async function importFacility(f){
+    if(!f)return;
+    if(!confirm(`Add ${f.name} (${f.country||'Antarctica'}) to the current mission locations?`))return;
+    try{const r=await api(`/api/public/facilities/${f.id}/import?expedition_id=${state.expeditionId}`,{method:'POST'});toast(r.created?'Facility added to mission':'Mission location updated',f.name);}
+    catch(err){toast('Facility import failed',err.message,'danger')}
+  }
+
+  async function renderActivity(){ setHeader('Activity','Audit-friendly cross-module mission timeline.');const rows=await api(`/api/activity?expedition_id=${state.expeditionId}&limit=200`);$('#view').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Mission Activity Log</h2><p>${rows.length} latest operational events.</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Category</th><th>Event</th><th>Actor</th></tr></thead><tbody>${rows.map(a=>`<tr><td>${fmtDate(a.created_at)}</td><td>${badge(a.category,'info')}</td><td>${esc(a.message)}</td><td>${esc(a.user_name||'System')}</td></tr>`).join('')}</tbody></table></div></div>`; }
+
+  async function renderSettings(){
+    setHeader('Settings','Mission configuration, access control, backup and account security.');
+    let users=[]; if(roleCan('commander')){try{users=await api('/api/users')}catch{}}
+    const locs=await loadLocations();
+    const exp=state.expeditions.find(e=>e.id===state.expeditionId);
+    $('#view').innerHTML=`
+      <div class="settings-grid">
+        <section class="panel settings-section"><h3>Account</h3><p>Your signed-in identity and security controls.</p><div class="info-list"><div class="info-row"><span>Name</span><strong>${esc(state.user.name)}</strong></div><div class="info-row"><span>Email</span><strong>${esc(state.user.email)}</strong></div><div class="info-row"><span>Role</span><strong>${esc(state.user.role)}</strong></div></div><div class="card-actions"><button class="button secondary" id="changePassword">Change password</button></div></section>
+        <section class="panel settings-section"><h3>Data & backup</h3><p>Export the central mission database as a portable JSON backup.</p><div class="info-list"><div class="info-row"><span>Storage</span><strong>Cloudflare D1 + R2 backups</strong></div><div class="info-row"><span>Offline support</span><strong>PWA shell + mutation queue</strong></div><div class="info-row"><span>Queued mutations</span><strong>${state.pending.length}</strong></div></div>${roleCan('commander')?'<div class="card-actions"><button class="button primary" id="downloadBackup">Download backup</button></div>':''}</section>
+      </div>
+      ${roleCan('commander')?`<section class="panel" style="margin-top:13px"><div class="panel-head"><div><h2>Mission Configuration</h2><p>Edit the current expedition or create another mission.</p></div><div class="panel-actions"><button class="button secondary" id="editExpedition">Edit mission</button><button class="button primary" id="newExpedition">+ New expedition</button></div></div><div class="info-list"><div class="info-row"><span>Name</span><strong>${esc(exp.name)}</strong></div><div class="info-row"><span>Region</span><strong>${esc(exp.region)}</strong></div><div class="info-row"><span>Status</span><strong>${esc(exp.status)}</strong></div><div class="info-row"><span>Mission window</span><strong>${esc(exp.start_date||'—')} → ${esc(exp.end_date||'—')}</strong></div></div></section>`:''}
+      <section class="panel" style="margin-top:13px"><div class="panel-head"><div><h2>Mission Locations</h2><p>Mapped stations, camps, routes and transport points.</p></div>${roleCan('commander','logistics')?'<button class="button primary" id="addLocation">+ Add location</button>':''}</div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Latitude</th><th>Longitude</th><th>Actions</th></tr></thead><tbody>${locs.map(l=>`<tr><td><strong>${esc(l.name)}</strong></td><td>${badge(l.type,'info')}</td><td class="mono">${l.latitude??'—'}</td><td class="mono">${l.longitude??'—'}</td><td>${roleCan('commander','logistics')?`<button class="icon-btn" data-edit-location="${l.id}">Edit</button>`:'—'}</td></tr>`).join('')}</tbody></table></div></section>
+      ${roleCan('commander')?`<section class="panel" style="margin-top:13px"><div class="panel-head"><div><h2>User Access</h2><p>Create role-based platform accounts.</p></div><button class="button primary" id="addUser">+ Add user</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Created</th></tr></thead><tbody>${users.map(u=>`<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${badge(u.role,'info')}</td><td>${badge(u.active?'Active':'Inactive',u.active?'good':'danger')}</td><td>${fmtDate(u.created_at)}</td></tr>`).join('')}</tbody></table></div></section>`:''}`;
+    $('#changePassword').onclick=openPasswordChange;
+    if($('#downloadBackup'))$('#downloadBackup').onclick=downloadBackup;
+    if($('#addUser'))$('#addUser').onclick=openUserCreate;
+    if($('#editExpedition'))$('#editExpedition').onclick=()=>openExpeditionForm(exp);
+    if($('#newExpedition'))$('#newExpedition').onclick=()=>openExpeditionForm(null);
+    if($('#addLocation'))$('#addLocation').onclick=()=>openLocationForm(null);
+    $$('[data-edit-location]').forEach(b=>b.onclick=()=>openLocationForm(locs.find(x=>x.id===+b.dataset.editLocation)));
+  }
+  function openExpeditionForm(exp){
+    modal(exp?'Edit expedition':'Create expedition',exp?'Update mission identity, dates and status.':'Create a new operational workspace.',`<form id="expForm"><div class="form-grid"><div class="field"><label>Name</label><input name="name" required value="${esc(exp?.name||'')}"></div><div class="field"><label>Region</label><input name="region" required value="${esc(exp?.region||'')}"></div><div class="field"><label>Start date</label><input type="date" name="start_date" value="${esc(exp?.start_date||'')}"></div><div class="field"><label>End date</label><input type="date" name="end_date" value="${esc(exp?.end_date||'')}"></div><div class="field"><label>Status</label><select name="status">${['Planning','Active','Paused','Completed','Archived'].map(x=>`<option ${exp?.status===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field full"><label>Description</label><textarea name="description">${esc(exp?.description||'')}</textarea></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">${exp?'Save mission':'Create expedition'}</button></div></form>`);
+    $('[data-cancel]').onclick=closeModal;
+    $('#expForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={name:formVal(f,'name'),region:formVal(f,'region'),start_date:formVal(f,'start_date')||null,end_date:formVal(f,'end_date')||null,status:formVal(f,'status'),description:formVal(f,'description')};try{if(exp){await api(`/api/expeditions/${exp.id}`,{method:'PATCH',body:JSON.stringify(p)});}else{const r=await api('/api/expeditions',{method:'POST',body:JSON.stringify(p)});state.expeditionId=r.id;localStorage.setItem('polarops_expedition',r.id);}state.expeditions=await api('/api/expeditions');closeModal();renderShell();await renderSettings();toast(exp?'Mission updated':'Expedition created',p.name)}catch(err){toast('Mission save failed',err.message,'danger')}};
+  }
+  function openLocationForm(loc){
+    modal(loc?'Edit location':'Add mission location',loc?'Correct mapped coordinates or location type.':'Add a station, camp, route point or transport node.',`<form id="locForm"><div class="form-grid"><div class="field"><label>Name</label><input name="name" required value="${esc(loc?.name||'')}"></div><div class="field"><label>Type</label><select name="type">${['Station','Camp','Route','Transport','Cache','Research Site'].map(x=>`<option ${loc?.type===x?'selected':''}>${x}</option>`).join('')}</select></div><div class="field"><label>Latitude</label><input type="number" step="any" name="latitude" value="${loc?.latitude??''}" placeholder="-75.480"></div><div class="field"><label>Longitude</label><input type="number" step="any" name="longitude" value="${loc?.longitude??''}" placeholder="124.120"></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">${loc?'Save location':'Add location'}</button></div></form>`);
+    $('[data-cancel]').onclick=closeModal;
+    $('#locForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={expedition_id:state.expeditionId,name:formVal(f,'name'),type:formVal(f,'type'),latitude:numOrNull(formVal(f,'latitude')),longitude:numOrNull(formVal(f,'longitude'))};try{if(loc)await api(`/api/locations/${loc.id}`,{method:'PATCH',body:JSON.stringify(p)});else await api('/api/locations',{method:'POST',body:JSON.stringify(p)});closeModal();toast(loc?'Location updated':'Location added',p.name);renderSettings()}catch(err){toast('Location save failed',err.message,'danger')}};
+  }
+  function openPasswordChange(){ modal('Change password','Use at least eight characters.',`<form id="pwForm"><div class="field"><label>Current password</label><input name="current_password" type="password" required></div><div class="field"><label>New password</label><input name="new_password" type="password" minlength="8" required></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Update password</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#pwForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api('/api/me/password',{method:'POST',body:JSON.stringify({current_password:formVal(f,'current_password'),new_password:formVal(f,'new_password')})});closeModal();toast('Password changed')}catch(err){toast('Password change failed',err.message,'danger')}}; }
+  function openUserCreate(){ modal('Create user','Assign the minimum role needed for expedition work.',`<form id="userForm"><div class="form-grid"><div class="field"><label>Name</label><input name="name" required></div><div class="field"><label>Email</label><input name="email" type="email" required></div><div class="field"><label>Role</label><select name="role"><option value="field">Field</option><option value="logistics">Logistics</option><option value="commander">Commander</option></select></div><div class="field"><label>Temporary password</label><input name="password" type="password" minlength="8" required></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Create user</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#userForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api('/api/users',{method:'POST',body:JSON.stringify({name:formVal(f,'name'),email:formVal(f,'email'),role:formVal(f,'role'),password:formVal(f,'password')})});closeModal();toast('User created');renderSettings()}catch(err){toast('User creation failed',err.message,'danger')}}; }
+  async function downloadBackup(){ try{const res=await fetch('/api/backup',{headers:{Authorization:`Bearer ${state.token}`}});if(!res.ok)throw new Error('Backup request failed');const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`polarops-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);toast('Backup downloaded')}catch(err){toast('Backup failed',err.message,'danger')} }
+
+  async function init(){
+    if('serviceWorker'in navigator){ try{await navigator.serviceWorker.register('/service-worker.js');state.serviceWorker=true}catch{} }
+    if(!state.token){renderLogin();return}
+    try{await bootAuthed()}catch{renderLogin()}
+  }
+
+  window.PolarOps={navigate,logout,renderView,connectRealtime,stopPersonnelGps,stopVehicleSimulation};
+  init();
+})();

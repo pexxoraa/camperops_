@@ -1,0 +1,50 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "polarops",
+  "main": "src/worker.py",
+  "compatibility_date": "2026-09-28",
+  "compatibility_flags": ["python_workers"],
+
+  "assets": {
+    "directory": "./public/",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "polarops-db",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "BACKUPS",
+      "bucket_name": "polarops-backups"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EXPEDITION_ROOM",
+        "class_name": "ExpeditionRoom"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ExpeditionRoom"]
+    }
+  ],
+
+  "vars": {
+    "COMNAP_FACILITIES_URL": "https://www.comnap.aq/s/Facilities_Nov2024.csv",
+    "OPEN_METEO_URL": "https://api.open-meteo.com/v1/forecast",
+    "OPERATIONS_FEED_URL": ""
+  }
+}
