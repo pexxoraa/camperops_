@@ -5,6 +5,8 @@
   const $$ = (s, root=document) => [...root.querySelectorAll(s)];
   const esc = (v='') => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const tokenKey='polarops_token_v1', cacheKey='polarops_cache_v1', queueKey='polarops_queue_v1';
+  let persistentCache={};try{persistentCache=JSON.parse(localStorage.getItem(cacheKey)||'{}')}catch{}
+  let cacheWriteTimer=null;
   const state = {
     token: localStorage.getItem(tokenKey) || '', user:null, expeditions:[], expeditionId:null,
     view:'overview', online:navigator.onLine, pending: JSON.parse(localStorage.getItem(queueKey)||'[]'),
@@ -12,18 +14,38 @@
     realtimeStatus:'disconnected', ws:null, wsGeneration:0, wsReconnect:null, wsPing:null, realtimeRender:null,
     fallbackTimer:null, deferredRealtime:false,
     gpsWatchId:null, gpsPersonnelId:null, gpsLastSent:0,
-    vehicleSimTimer:null, vehicleSimId:null, vehicleSimStep:0, vehicleSimBase:null
+    vehicleSimTimer:null, vehicleSimId:null, vehicleSimStep:0, vehicleSimBase:null,
+    liveMap:null, liveMarkers:{personnel:new Map(),vehicle:new Map()}, renderInProgress:false, renderQueued:false,
+    memoryCache:new Map(), prefetchGeneration:0
   };
 
   const navItems=[
-    ['overview','⌂','Overview'],['personnel','◎','Personnel'],['cargo','▣','Cargo'],['inventory','▤','Inventory'],
-    ['assets','◇','Assets'],['vehicles','▱','Vehicles'],['emergency','△','Emergency'],['network','⌖','Antarctic Network'],['activity','≡','Activity'],['settings','⚙','Settings']
+    ['overview','⌂','Dashboard'],['operations','◫','Operations'],['personnel','◎','Personnel'],['cargo','▣','Cargo'],['inventory','▤','Inventory'],
+    ['routes','⌁','Routes & Zones'],['science','✧','Science'],['comms','◌','Communications'],['readiness','✓','Readiness'],
+    ['assets','◇','Assets'],['vehicles','▱','Vehicles'],['emergency','△','Incidents'],['environment','◉','Environment'],['network','⌖','Facility Network'],
+    ['alerts','!','Alert Center'],['activity','≡','Audit Trail'],['settings','⚙','Settings']
   ];
 
+  const FAST_CACHE_MS=15000;
   function saveQueue(){ localStorage.setItem(queueKey,JSON.stringify(state.pending)); updateSync(); }
-  function getCache(){ try{return JSON.parse(localStorage.getItem(cacheKey)||'{}')}catch{return {}} }
-  function setCache(path,data){ const c=getCache(); c[path]={ts:Date.now(),data}; localStorage.setItem(cacheKey,JSON.stringify(c)); }
-  function fromCache(path){ const c=getCache()[path]; return c?.data; }
+  function getCache(){ return persistentCache; }
+  function flushPersistentCache(){ clearTimeout(cacheWriteTimer);cacheWriteTimer=null;try{localStorage.setItem(cacheKey,JSON.stringify(persistentCache))}catch{} }
+  function setCache(path,data){
+    persistentCache[path]={ts:Date.now(),data};
+    clearTimeout(cacheWriteTimer);
+    cacheWriteTimer=setTimeout(flushPersistentCache,350);
+  }
+  function fromCache(path){ return persistentCache[path]?.data; }
+  window.addEventListener('pagehide',flushPersistentCache);
+  function fastCacheable(path){
+    return !path.includes('force=true') && !path.startsWith('/api/realtime/ticket') && !path.startsWith('/api/ops/search') && !path.startsWith('/api/public/facilities/') && !path.includes('/weather');
+  }
+  function fastCacheGet(path){
+    const hit=state.memoryCache.get(path);
+    return hit && Date.now()-hit.ts<FAST_CACHE_MS ? hit.data : undefined;
+  }
+  function fastCacheSet(path,data){ if(fastCacheable(path))state.memoryCache.set(path,{ts:Date.now(),data}); }
+  function clearFastCache(){ state.memoryCache.clear(); }
   function toast(title,detail='',kind='good',ms=2800){
     const root=$('#toastRoot'); if(!root)return;
     const el=document.createElement('div'); el.className=`toast ${kind}`; el.innerHTML=`<strong>${esc(title)}</strong>${detail?`<span>${esc(detail)}</span>`:''}`;
@@ -32,16 +54,24 @@
 
   async function api(path,opts={}){
     const method=(opts.method||'GET').toUpperCase();
+    const useFastCache=method==='GET' && opts.noFastCache!==true && fastCacheable(path);
+    if(useFastCache){
+      const cached=fastCacheGet(path);
+      if(cached!==undefined)return cached;
+    }
     const headers={'Content-Type':'application/json',...(opts.headers||{})};
     if(state.token) headers.Authorization=`Bearer ${state.token}`;
+    const fetchOpts={...opts,method,headers};
+    delete fetchOpts.noFastCache;
     try{
-      const res=await fetch(path,{...opts,method,headers});
+      const res=await fetch(path,fetchOpts);
       if(res.status===401 && path!='/api/auth/login'){ logout(false); throw new Error('Your session expired. Please sign in again.'); }
       let data=null; const ct=res.headers.get('content-type')||'';
       if(ct.includes('application/json')) data=await res.json(); else data=await res.text();
       if(!res.ok) throw new Error(data?.detail || data || `Request failed (${res.status})`);
       state.online=true;
-      if(method==='GET') setCache(path,data);
+      if(method==='GET'){setCache(path,data);fastCacheSet(path,data)}
+      else clearFastCache();
       updateSync();
       return data;
     }catch(err){
@@ -50,7 +80,7 @@
       if(method==='GET'){
         const cached=fromCache(path); if(cached!==undefined){ toast('Offline data shown','Using the latest cached mission snapshot.','warn'); return cached; }
       } else if(!navigator.onLine && path!='/api/auth/login'){
-        const item={id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,path,method,body:opts.body||null,created_at:new Date().toISOString()};
+        const item={id:crypto.randomUUID?.()||`${Date.now()}-${Math.random()}`,path,method,body:opts.body||null,status:'PENDING',attempts:0,created_at:new Date().toISOString()};
         state.pending.push(item); saveQueue(); toast('Action queued for sync','It will be sent when connectivity returns.','warn'); return {queued:true};
       }
       throw err;
@@ -59,13 +89,30 @@
 
   async function flushQueue(){
     if(!navigator.onLine || !state.token || !state.pending.length) return;
-    const queued=[...state.pending], failed=[];
-    for(const q of queued){
-      try{ await fetch(q.path,{method:q.method,headers:{'Content-Type':'application/json','Authorization':`Bearer ${state.token}`},body:q.body}); }
-      catch{ failed.push(q); }
+    const queued=[...state.pending], remaining=[]; let synced=0;
+    for(let i=0;i<queued.length;i++){
+      const q=queued[i];
+      try{
+        q.status='SYNCING';q.attempts=(q.attempts||0)+1;
+        const res=await fetch(q.path,{method:q.method,headers:{'Content-Type':'application/json','Authorization':`Bearer ${state.token}`,'X-PolarOps-Mutation-ID':q.id},body:q.body});
+        if(res.ok){q.status='SYNCED';synced++;continue}
+        let detail='';
+        try{const body=await res.json();detail=body?.detail||body?.error?.message||''}catch{}
+        if(res.status===401){
+          q.status='FAILED';q.last_error=detail||'Authentication expired';
+          remaining.push(q,...queued.slice(i+1));
+          logout(false);break;
+        }
+        if(res.status===409){q.status='CONFLICT';q.last_error=detail||'Conflict requires review';remaining.push(q);continue}
+        if(res.status===429||res.status>=500){q.status='PENDING';q.last_error=detail||`HTTP ${res.status}; retry later`;remaining.push(q);continue}
+        q.status='FAILED';q.last_error=detail||`HTTP ${res.status}`;remaining.push(q);
+      }catch(err){
+        q.status='PENDING';q.last_error=err?.message||'Network failure';remaining.push(q);
+      }
     }
-    state.pending=failed; saveQueue();
-    if(!failed.length && queued.length){ toast('Offline actions synchronized',`${queued.length} queued action${queued.length===1?'':'s'} uploaded.`); renderView(); }
+    state.pending=remaining; saveQueue();
+    if(synced){ toast('Offline actions synchronized',`${synced} queued action${synced===1?'':'s'} uploaded.`); if(state.view!=='overview')renderView(); }
+    if(remaining.some(q=>q.status==='CONFLICT'))toast('Sync conflict','One or more offline actions need review.','warn',4500);
   }
 
   function updateSync(){
@@ -92,13 +139,24 @@
     state.ws=null;state.realtimeStatus=navigator.onLine?'disconnected':'offline';updateRealtimeIndicator();
   }
 
-  function connectRealtime(){
+  async function connectRealtime(){
     if(!state.token||!state.expeditionId||!navigator.onLine)return;
     disconnectRealtime();
     const generation=++state.wsGeneration;
+    const expeditionId=Number(state.expeditionId);
+    state.realtimeStatus='connecting';updateRealtimeIndicator();
+    let ticket;
+    try{
+      const issued=await api(`/api/realtime/ticket?expedition_id=${expeditionId}`);
+      ticket=issued.ticket;
+    }catch(err){
+      if(generation===state.wsGeneration&&expeditionId===Number(state.expeditionId)){state.realtimeStatus='disconnected';updateRealtimeIndicator();clearTimeout(state.wsReconnect);state.wsReconnect=setTimeout(connectRealtime,5000)}
+      return;
+    }
+    if(generation!==state.wsGeneration||expeditionId!==Number(state.expeditionId)||!ticket)return;
     const protocol=location.protocol==='https:'?'wss':'ws';
-    const socket=new WebSocket(`${protocol}://${location.host}/ws/expeditions/${state.expeditionId}`);
-    state.ws=socket;state.realtimeStatus='connecting';updateRealtimeIndicator();
+    const socket=new WebSocket(`${protocol}://${location.host}/ws/expeditions/${expeditionId}?ticket=${encodeURIComponent(ticket)}`);
+    state.ws=socket;
     socket.onopen=()=>{ if(generation!==state.wsGeneration)return; socket.send(JSON.stringify({type:'auth',token:state.token})); };
     socket.onmessage=e=>{ if(generation!==state.wsGeneration)return; let msg;try{msg=JSON.parse(e.data)}catch{return}
       if(msg.type==='auth.ok'){state.realtimeStatus='live';updateRealtimeIndicator();clearInterval(state.wsPing);state.wsPing=setInterval(()=>{if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'ping'}))},25000);return}
@@ -112,18 +170,83 @@
 
   function handleRealtimeEvent(message){
     if(Number(message.expedition_id)!==Number(state.expeditionId))return;
+    if(!message.type?.startsWith('telemetry.'))clearFastCache();
     if(message.type==='incident.created')toast('Live SOS received',message.data?.code||'New incident','danger',4200);
+
+    // Telemetry is high-frequency. Never rebuild the dashboard for telemetry:
+    // move existing markers in place and wait for the next intentional data
+    // refresh to reconcile any newly-added telemetry entities.
+    if(message.type?.startsWith('telemetry.')){
+      if(message.type==='telemetry.updated' && state.view==='overview' && state.liveMap){
+        updateLiveTelemetryMarker(message);
+      }
+      return;
+    }
+
+    if(state.view==='overview')return;
     if($('#modalRoot')?.children.length){state.deferredRealtime=true;return}
     clearTimeout(state.realtimeRender);
-    state.realtimeRender=setTimeout(()=>renderView(),250);
+    state.realtimeRender=setTimeout(()=>renderView(),450);
+  }
+
+  function updateLiveTelemetryMarker(message){
+    const kind=message.entity_type, id=Number(message.entity_id), data=message.data||{};
+    if(!['personnel','vehicle'].includes(kind)||!Number.isFinite(+data.latitude)||!Number.isFinite(+data.longitude))return false;
+    const marker=state.liveMarkers?.[kind]?.get(id);
+    if(!marker)return false;
+    marker.setLatLng([+data.latitude,+data.longitude]);
+    const when=data.recorded_at?ago(data.recorded_at):'just now';
+    if(kind==='vehicle'){
+      marker.setPopupContent(`<strong>Vehicle telemetry</strong><br><b>LIVE GPS</b> · ${when}${data.fuel_percent!=null?`<br>${n(data.fuel_percent)}% fuel`:''}`);
+    }else{
+      marker.setPopupContent(`<strong>Personnel telemetry</strong><br><b>LIVE GPS</b> · ${when}${data.accuracy_m!=null?`<br>Accuracy ±${n(data.accuracy_m)}m`:''}`);
+    }
+    return true;
   }
 
   function startFallbackRefresh(){
     clearInterval(state.fallbackTimer);
     state.fallbackTimer=setInterval(()=>{
       if(!state.token||!navigator.onLine||state.realtimeStatus==='live'||document.hidden||$('#modalRoot')?.children.length)return;
+
+      // A complete overview rebuild destroys/recreates Leaflet and looks like
+      // a page refresh. Keep the command dashboard stable while WebSocket is
+      // reconnecting. Other list views can still use the fallback refresh.
+      if(state.view==='overview')return;
       renderView();
-    },10000);
+    },30000);
+  }
+
+  async function prefetchMissionData(){
+    const expeditionId=Number(state.expeditionId), generation=++state.prefetchGeneration;
+    if(!expeditionId||!state.token||!navigator.onLine)return;
+    const pole=currentPole();
+    const paths=[
+      `/api/locations?expedition_id=${expeditionId}`,
+      `/api/personnel?expedition_id=${expeditionId}`,
+      `/api/cargo?expedition_id=${expeditionId}`,
+      `/api/inventory?expedition_id=${expeditionId}`,
+      `/api/vehicles?expedition_id=${expeditionId}`,
+      `/api/assets?expedition_id=${expeditionId}`,
+      `/api/incidents?expedition_id=${expeditionId}`,
+      `/api/ops/summary?expedition_id=${expeditionId}`,
+      `/api/ops/routes?expedition_id=${expeditionId}`,
+      `/api/ops/science?expedition_id=${expeditionId}`,
+      `/api/ops/comms?expedition_id=${expeditionId}`,
+      `/api/ops/readiness?expedition_id=${expeditionId}`,
+      `/api/ops/alerts?expedition_id=${expeditionId}`,
+      `/api/ops/audit?expedition_id=${expeditionId}&limit=300`,
+      `/api/integrations/workers/status?expedition_id=${expeditionId}`,
+      `/api/environment/overview?expedition_id=${expeditionId}`,
+      '/api/data-sources',
+      pole==='south'?'/api/public/facilities?limit=1000':'/api/public/arctic-research-stations'
+    ];
+    if(roleCan('commander'))paths.push('/api/users');
+    for(let i=0;i<paths.length;i+=4){
+      if(generation!==state.prefetchGeneration||expeditionId!==Number(state.expeditionId))return;
+      await Promise.allSettled(paths.slice(i,i+4).map(path=>api(path)));
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
   }
 
   window.addEventListener('online',()=>{state.online=true;updateSync();flushQueue();connectRealtime()});
@@ -138,6 +261,38 @@
   function statusKind(s=''){ s=s.toLowerCase(); if(/safe|delivered|operational|available|cleared|resolved|ok/.test(s))return'good'; if(/critical|active|low|overdue|due|maintenance|high/.test(s))return'danger'; if(/transit|moving|response|deployed|medium/.test(s))return'info'; return'warn'; }
   function roleCan(...roles){ return !!state.user && roles.includes(state.user.role); }
 
+  function poleForRegion(region=''){
+    const r=String(region||'').toLowerCase();
+    if(r.includes('antarctic')||r.includes('south'))return 'south';
+    if(r.includes('arctic')||r.includes('north'))return 'north';
+    return 'south';
+  }
+  function currentPole(){
+    const exp=state.expeditions.find(e=>e.id===state.expeditionId);
+    return poleForRegion(exp?.region);
+  }
+  function applyPolarTheme(){ document.body.dataset.pole=currentPole(); }
+  function destroyLiveMap(){
+    if(state.liveMap){
+      const map=state.liveMap; state.liveMap=null;
+      try{ map.stop(); map.off(); map.remove(); }catch{}
+    }
+    state.liveMarkers={personnel:new Map(),vehicle:new Map()};
+  }
+  async function switchExpedition(id){
+    const next=state.expeditions.find(e=>e.id===Number(id)); if(!next)return;
+    stopPersonnelGps(false); stopVehicleSimulation(false); destroyLiveMap();
+    state.prefetchGeneration++;clearFastCache();
+    state.expeditionId=Number(next.id);
+    localStorage.setItem('polarops_expedition',state.expeditionId);
+    applyPolarTheme(); renderShell(); await renderView(); connectRealtime();setTimeout(prefetchMissionData,80);
+  }
+  async function switchPole(pole){
+    const next=state.expeditions.find(e=>poleForRegion(e.region)===pole);
+    if(!next){toast(pole==='north'?'No Arctic mission':'No Antarctic mission','Create or import an expedition for this polar region.','warn');return}
+    await switchExpedition(next.id);
+  }
+
   function renderLogin(){
     document.title='PolarOps — Sign in';
     $('#app').innerHTML=`
@@ -146,9 +301,13 @@
           <div class="login-brand brand-lockup"><div class="brand-mark">✦</div><div><strong>POLAROPS</strong><span>Expedition Operations Platform</span></div></div>
           <div class="login-copy">
             <span class="eyebrow">Integrated mission command</span>
-            <h1>One operational picture for extreme environments.</h1>
-            <p>Plan expeditions, account for personnel, track cargo and assets, manage safety stock, coordinate vehicles and run emergency response from one shared system.</p>
-            <div class="capability-strip"><span>Personnel accountability</span><span>Cargo chain of custody</span><span>Inventory thresholds</span><span>Asset control</span><span>Emergency command</span><span>Offline queue</span></div>
+            <h1>One operational picture for both polar regions.</h1>
+            <p>Separate Arctic and Antarctic operations while keeping personnel, cargo, assets, vehicles and emergency response in one platform.</p>
+            <div class="login-region-gallery">
+              <div class="login-region-photo south"><img src="/media/antarctica-nasa.jpg" alt="Antarctica, NASA/JPL imagery"><span><strong>ANTARCTIC</strong>South polar operations</span></div>
+              <div class="login-region-photo north"><img src="/media/arctic-nasa.jpg" alt="Arctic sea ice, NASA Scientific Visualization Studio"><span><strong>ARCTIC</strong>North polar operations</span></div>
+            </div>
+            <div class="polar-credit">Polar imagery: NASA/JPL · NASA Scientific Visualization Studio</div>
           </div>
         </section>
         <section class="login-panel">
@@ -171,14 +330,22 @@
   function demoAccount(label,email,pw){ return `<div class="demo-account" data-email="${esc(email)}" data-password="${esc(pw)}"><div><strong>${esc(label)}</strong><span>${esc(email)}</span></div><button type="button">Use account</button></div>`; }
   async function doLogin(email,password){
     const btn=$('#loginForm button[type=submit]'); if(btn){btn.disabled=true;btn.textContent='Signing in…'}
-    try{ const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})}); state.token=r.token;state.user=r.user;localStorage.setItem(tokenKey,state.token);await bootAuthed(); toast('Signed in',`Role: ${state.user.role}`); }
+    try{ const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})}); if(!r?.token||!r?.user)throw new Error('Invalid login response'); const signedInRole=r.user.role||'user'; state.token=r.token;state.user=r.user;localStorage.setItem(tokenKey,state.token);await bootAuthed(); if(state.user)toast('Signed in',`Role: ${signedInRole}`); }
     catch(e){toast('Sign-in failed',e.message,'danger'); if(btn){btn.disabled=false;btn.textContent='Sign in'}}
   }
-  function logout(show=true){ stopPersonnelGps(false);stopVehicleSimulation(false);disconnectRealtime();clearInterval(state.fallbackTimer);localStorage.removeItem(tokenKey);state.token='';state.user=null;state.expeditions=[];state.expeditionId=null; if(show)toast('Signed out');renderLogin(); }
+  function logout(show=true){ stopPersonnelGps(false);stopVehicleSimulation(false);disconnectRealtime();clearInterval(state.fallbackTimer);state.prefetchGeneration++;clearFastCache();localStorage.removeItem(tokenKey);state.token='';state.user=null;state.expeditions=[];state.expeditionId=null; if(show)toast('Signed out');renderLogin(); }
 
   async function bootAuthed(){
-    try{ state.user=await api('/api/me'); state.expeditions=await api('/api/expeditions'); if(!state.expeditions.length){ throw new Error('No expedition exists. Create one through the API or reseed demo mode.'); } state.expeditionId=Number(localStorage.getItem('polarops_expedition'))||state.expeditions[0].id; if(!state.expeditions.some(e=>e.id===state.expeditionId))state.expeditionId=state.expeditions[0].id; renderShell(); await renderView(); connectRealtime();startFallbackRefresh(); }
-    catch(e){ toast('Unable to start platform',e.message,'danger',4500); logout(false); }
+    try{
+      const preferred=Number(localStorage.getItem('polarops_expedition'))||0;
+      const boot=await api(`/api/bootstrap${preferred?`?expedition_id=${preferred}`:''}`,{noFastCache:true});
+      state.user=boot.user;state.expeditions=boot.expeditions||[];
+      if(!state.expeditions.length)throw new Error('No expedition exists. Create one through the API or reseed demo mode.');
+      state.expeditionId=Number(boot.expedition_id)||state.expeditions[0].id;
+      localStorage.setItem('polarops_expedition',state.expeditionId);
+      if(boot.dashboard)fastCacheSet(`/api/dashboard?expedition_id=${state.expeditionId}`,boot.dashboard);
+      renderShell();await renderView();connectRealtime();startFallbackRefresh();setTimeout(prefetchMissionData,80);
+    }catch(e){ toast('Unable to start platform',e.message,'danger',4500); logout(false); }
   }
 
   function renderShell(){
@@ -186,51 +353,271 @@
     $('#app').innerHTML=`<div class="shell">
       <aside class="sidebar">
         <div class="brand-lockup"><div class="brand-mark">✦</div><div><strong>POLAROPS</strong><span>Operations platform</span></div></div>
+        <div class="polar-switch" aria-label="Polar region">
+          <button data-pole="south" class="${poleForRegion(exp.region)==='south'?'active':''}"><span>▼</span><b>ANTARCTIC</b><small>SOUTH</small></button>
+          <button data-pole="north" class="${poleForRegion(exp.region)==='north'?'active':''}"><span>▲</span><b>ARCTIC</b><small>NORTH</small></button>
+        </div>
         <div class="mission-card"><small>ACTIVE MISSION</small><strong id="missionName">${esc(exp.name)}</strong><span id="missionRegion">${esc(exp.region)}</span></div>
-        <nav class="nav">${navItems.map(([id,ico,label])=>`<button data-view="${id}" class="${id===state.view?'active':''}"><span class="ico">${ico}</span><span>${label}</span></button>`).join('')}</nav>
+        <nav class="nav">${navItems.map(([id,ico,label])=>`<button data-view="${id}" class="${id===state.view?'active':''}"><span class="ico">${ico}</span><span>${id==='network'?(poleForRegion(exp.region)==='north'?'Arctic Research':'Antarctic Network'):label}</span></button>`).join('')}</nav>
         <div class="sidebar-bottom"><div class="sync-box"><i class="sync-dot"></i><div><strong id="syncLabel">SYNC ONLINE</strong><span id="syncDetail">Central database connected</span></div></div>
           <div class="user-chip"><div class="avatar">${esc(initials(state.user.name))}</div><div><strong>${esc(state.user.name)}</strong><span>${esc(state.user.role)}</span></div><button class="logout-btn" title="Sign out">↪</button></div>
         </div>
       </aside>
       <main class="main"><header class="topbar"><div><span class="eyebrow" id="crumb">POLAR OPERATIONS / ${esc(exp.name)}</span><h1 id="pageTitle">Overview</h1><div id="pageSubtitle" class="page-subtitle">Live expedition status and exceptions.</div></div>
-        <div class="topbar-actions"><span class="realtime-pill connecting" id="realtimePill"><i></i><span id="realtimeLabel">CONNECTING</span></span><select class="expedition-select" id="expeditionSelect">${state.expeditions.map(e=>`<option value="${e.id}" ${e.id===state.expeditionId?'selected':''}>${esc(e.name)}</option>`).join('')}</select><button class="sos-btn" id="globalSOS">⚠ TRIGGER SOS</button></div>
+        <div class="topbar-actions"><button class="button ghost small global-search-btn" id="globalSearchButton" type="button">⌕ Search</button><span class="realtime-pill connecting" id="realtimePill"><i></i><span id="realtimeLabel">CONNECTING</span></span><select class="expedition-select" id="expeditionSelect">${state.expeditions.map(e=>`<option value="${e.id}" ${e.id===state.expeditionId?'selected':''}>${esc(e.name)}</option>`).join('')}</select><button class="sos-btn" id="globalSOS">⚠ TRIGGER SOS</button></div>
       </header><section id="view"></section></main></div>`;
+    applyPolarTheme();
     $$('.nav button').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));
+    $$('.polar-switch button[data-pole]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();switchPole(b.dataset.pole)}));
     $('.logout-btn').addEventListener('click',()=>logout());
-    $('#expeditionSelect').addEventListener('change',async e=>{stopPersonnelGps(false);stopVehicleSimulation(false);state.expeditionId=Number(e.target.value);localStorage.setItem('polarops_expedition',state.expeditionId);const ex=state.expeditions.find(x=>x.id===state.expeditionId);$('#missionName').textContent=ex.name;$('#missionRegion').textContent=ex.region;await renderView();connectRealtime()});
-    $('#globalSOS').addEventListener('click',()=>openIncidentCreate()); updateSync();updateRealtimeIndicator();
+    $('#expeditionSelect').addEventListener('change',e=>switchExpedition(Number(e.target.value)));
+    $('#globalSOS').addEventListener('click',()=>openIncidentCreate());
+    $('#globalSearchButton').addEventListener('click',()=>window.PolarOpsFeatures?.openGlobalSearch?.());
+    updateSync();updateRealtimeIndicator();
   }
 
   async function navigate(view){ state.view=view; $$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===view)); await renderView(); }
   function setHeader(title,subtitle){ const exp=state.expeditions.find(e=>e.id===state.expeditionId); $('#pageTitle').textContent=title;$('#pageSubtitle').textContent=subtitle||'';$('#crumb').textContent=`POLAR OPERATIONS / ${exp?.name||''}`; document.title=`${title} — PolarOps`; }
   async function renderView(){
-    const v=$('#view'); if(!v)return; v.innerHTML='<div class="panel"><div class="empty"><div><strong>Loading mission data…</strong>Connecting to central operations database.</div></div></div>';
+    if(state.renderInProgress){state.renderQueued=true;return}
+    state.renderInProgress=true;
+    const requestedView=state.view;
+    const v=$('#view');if(!v){state.renderInProgress=false;return}
+    const hadContent=!!v.children.length;
+    const loadingTimer=setTimeout(()=>{
+      if(!state.renderInProgress||state.view!==requestedView||!v.isConnected)return;
+      v.classList.add('view-loading');
+      if(!hadContent)v.innerHTML='<div class="panel"><div class="empty"><div><strong>Loading mission data…</strong>Connecting to central operations database.</div></div></div>';
+    },120);
     try{
-      if(state.view==='overview')await renderOverview(); else if(state.view==='personnel')await renderPersonnel(); else if(state.view==='cargo')await renderCargo(); else if(state.view==='inventory')await renderInventory(); else if(state.view==='assets')await renderAssets(); else if(state.view==='vehicles')await renderVehicles(); else if(state.view==='emergency')await renderEmergency(); else if(state.view==='network')await renderNetwork(); else if(state.view==='activity')await renderActivity(); else if(state.view==='settings')await renderSettings();
-    }catch(e){ v.innerHTML=`<div class="panel"><div class="empty"><div><strong>Could not load this section</strong>${esc(e.message)}</div></div></div>`;toast('Section load failed',e.message,'danger'); }
+      destroyLiveMap();
+      try{
+        if(requestedView==='overview')await renderOverview(); else if(requestedView==='operations')await window.PolarOpsFeatures.renderOperations(); else if(requestedView==='personnel')await renderPersonnel(); else if(requestedView==='cargo')await renderCargo(); else if(requestedView==='inventory')await renderInventory(); else if(requestedView==='routes')await window.PolarOpsFeatures.renderRoutes(); else if(requestedView==='science')await window.PolarOpsFeatures.renderScience(); else if(requestedView==='comms')await window.PolarOpsFeatures.renderComms(); else if(requestedView==='readiness')await window.PolarOpsFeatures.renderReadiness(); else if(requestedView==='assets')await renderAssets(); else if(requestedView==='vehicles')await renderVehicles(); else if(requestedView==='emergency')await renderEmergency(); else if(requestedView==='environment')await renderEnvironment(); else if(requestedView==='network')await renderNetwork(); else if(requestedView==='alerts')await window.PolarOpsFeatures.renderAlerts(); else if(requestedView==='activity')await window.PolarOpsFeatures.renderAudit(); else if(requestedView==='settings')await renderSettings();
+      }catch(e){ if(state.view===requestedView&&v.isConnected){v.innerHTML=`<div class="panel"><div class="empty"><div><strong>Could not load this section</strong>${esc(e.message)}</div></div></div>`;toast('Section load failed',e.message,'danger')} }
+    }finally{
+      clearTimeout(loadingTimer);
+      if(v.isConnected)v.classList.remove('view-loading');
+      state.renderInProgress=false;
+      if(state.renderQueued||state.view!==requestedView){state.renderQueued=false;setTimeout(()=>renderView(),0)}
+    }
   }
 
   async function renderOverview(){
-    setHeader('Command Overview','Live expedition status, resource posture and operational exceptions.');
-    const d=await api(`/api/dashboard?expedition_id=${state.expeditionId}`), s=d.stats;
+    const selectedExp=state.expeditions.find(e=>e.id===state.expeditionId);
+    const selectedPole=poleForRegion(selectedExp?.region);
+    const [d,facilityResponse,arcticResponse]=await Promise.all([
+      api(`/api/dashboard?expedition_id=${state.expeditionId}`),
+      selectedPole==='south'
+        ? api('/api/public/facilities?limit=1000').catch(()=>({items:[]}))
+        : Promise.resolve({items:[]}),
+      selectedPole==='north'
+        ? api('/api/public/arctic-research-stations').catch(()=>({items:[],summary:{}}))
+        : Promise.resolve({items:[],summary:{}})
+    ]);
+    const s=d.stats;
+    const publicFacilities=(facilityResponse.items||[]).filter(f=>f.geographic_scope==='antarctic_treaty_area');
+    const researchBases=publicFacilities.filter(f=>f.facility_type==='Station');
+    const supportFacilities=publicFacilities.filter(f=>f.facility_type!=='Station');
+    const arcticStations=arcticResponse.items||[];
+    const arcticVerified=arcticStations.filter(f=>String(f.verification_status||'').startsWith('verified_')&&Number.isFinite(+f.latitude)&&Number.isFinite(+f.longitude)&&+f.latitude>=55);
+    const arcticReference=arcticStations.filter(f=>!String(f.verification_status||'').startsWith('verified_')&&Number.isFinite(+f.latitude)&&Number.isFinite(+f.longitude)&&+f.latitude>=55);
+    setHeader(`${d.expedition.name} — Command Dashboard`, `${d.expedition.start_date||'—'} – ${d.expedition.end_date||'—'}  |  ${d.expedition.region}`);
     const riskScore=Math.min(100,d.risks.reduce((a,r)=>a+(r.severity==='high'?28:14),0));
+    const pole=poleForRegion(d.expedition.region), regionName=pole==='north'?'ARCTIC / NORTH POLAR OPERATIONS':'ANTARCTIC / SOUTH POLAR OPERATIONS';
+    const regionImage=pole==='north'?'/media/arctic-nasa.jpg':'/media/antarctica-nasa.jpg';
     $('#view').innerHTML=`
+      <div class="region-banner ${pole}" style="background-image:linear-gradient(90deg,rgba(5,39,66,.88),rgba(5,39,66,.30)),url('${regionImage}')">
+        <div><span class="region-kicker">${regionName}</span><strong>${esc(d.expedition.name)}</strong><small>${esc(d.expedition.region)} · Real map + live operational overlays</small></div>
+        <div class="region-source">${pole==='north'?'NASA SVS Arctic sea-ice imagery':'NASA/JPL Antarctic imagery'}</div>
+      </div>
       <div class="stats">
-        ${stat('Personnel',`${s.personnel_total-s.personnel_overdue} / ${s.personnel_total}`,s.personnel_overdue?`${s.personnel_overdue} check-in overdue`:'All accounted for','◎',s.personnel_overdue?'danger':'good')}
-        ${stat('Cargo',`${s.cargo_delivered} / ${s.cargo_total}`,`Delivered across mission`,'▣','info')}
-        ${stat('Fuel',`${s.fuel_avg}%`,`Average vehicle reserve`,'◫',s.fuel_avg<35?'danger':'warn')}
+        ${stat('Personnel',`${s.personnel_total-s.personnel_overdue} / ${s.personnel_total}`,s.personnel_overdue?`${s.personnel_overdue} check-in overdue`:'Safe / accounted for','◎',s.personnel_overdue?'danger':'good')}
+        ${stat('Cargo',`${s.cargo_delivered} / ${s.cargo_total}`,'Delivered','▣','info')}
+        ${stat('Fuel',`${s.fuel_avg}%`,'Average reserve','◫',s.fuel_avg<35?'danger':'warn')}
         ${stat('Inventory alerts',s.inventory_alerts,s.inventory_alerts?'Items below minimum':'No low stock','▤',s.inventory_alerts?'danger':'good')}
-        ${stat('Vehicles',`${s.vehicles_operational} / ${s.vehicles_total}`,`Operational`,'▱',s.vehicles_operational<s.vehicles_total?'warn':'good')}
+        ${stat('Vehicles',`${s.vehicles_operational} / ${s.vehicles_total}`,'Operational','▱',s.vehicles_operational<s.vehicles_total?'warn':'good')}
         ${stat('Active incidents',s.active_incidents,s.active_incidents?'Response required':'No active incidents','△',s.active_incidents?'danger':'good')}
       </div>
-      <div class="grid-2"><div class="panel"><div class="panel-head"><div><h2>Operational Map</h2><p>Locations and response assets for ${esc(d.expedition.name)}.</p></div><span class="badge info"><i class="dot"></i>LIVE DATA</span></div>${renderMap(d.locations,d.vehicles,d.personnel)}</div>
-        <div class="panel"><div class="panel-head"><div><h2>Operational Risk</h2><p>Deterministic exception analysis from mission state.</p></div></div><div class="risk-summary"><div class="risk-ring">${riskScore}</div><div><strong>${riskScore>55?'High attention':riskScore>20?'Requires attention':'Controlled'}</strong><p>Risk score is derived from overdue check-ins, safety-stock breaches and low vehicle fuel.</p></div></div><div class="risk-list">${d.risks.length?d.risks.map(r=>`<div class="risk-item ${r.severity}"><div class="risk-icon">!</div><div><strong>${esc(r.title)}</strong><span>${esc(r.detail)}</span></div></div>`).join(''):'<div class="empty" style="min-height:150px"><div><strong>No current exceptions</strong>Mission thresholds are within configured limits.</div></div>'}</div></div>
-      </div>
-      <div class="grid-equal"><div class="panel"><div class="panel-head"><div><h2>Recent Activity</h2><p>Cross-module operations timeline.</p></div><button class="button ghost small" data-go="activity">View all</button></div><div class="activity-list">${d.activity.slice(0,7).map(a=>activityRow(a)).join('')}</div></div>
-        <div class="panel"><div class="panel-head"><div><h2>Mission Snapshot</h2><p>Assets, timing and command posture.</p></div></div><div class="info-list"><div class="info-row"><span>Region</span><strong>${esc(d.expedition.region)}</strong></div><div class="info-row"><span>Mission status</span><strong>${esc(d.expedition.status)}</strong></div><div class="info-row"><span>Mission window</span><strong>${esc(d.expedition.start_date||'—')} → ${esc(d.expedition.end_date||'—')}</strong></div><div class="info-row"><span>Tracked assets</span><strong>${s.assets_total}</strong></div><div class="info-row"><span>Locations</span><strong>${d.locations.length}</strong></div><div class="info-row"><span>Live GPS feeds</span><strong>${s.live_personnel+s.live_vehicles} trackers</strong></div><div class="info-row"><span>Data mode</span><strong>Durable Object live + offline queue</strong></div></div></div>
+      <div class="grid-2">
+        <div class="panel dashboard-map-panel" id="dashboardMapPanel">
+          <div class="panel-head"><div><h2>Expedition Map</h2><p>${pole==='south'?'Live mission operations plus verified COMNAP Antarctic research bases.':`Live mission operations plus ${arcticVerified.length} mapped, independently verified Arctic research sites.`}</p></div><div class="panel-actions"><span class="badge info"><i class="dot"></i>LIVE</span>${pole==='south'?`<span class="badge violet">${researchBases.length} RESEARCH BASES</span>`:`<span class="badge violet">${arcticVerified.length} VERIFIED SITES</span>`}<button class="button ghost small map-fullscreen-btn" id="mapFullscreen" type="button" title="Open map fullscreen">⛶ Fullscreen</button></div></div>
+          <div id="liveMissionMap" class="live-mission-map" role="application" aria-label="Live expedition map"></div>
+          <div class="live-map-note"><span>● Live GPS updates through PolarOps WebSockets</span><span>${pole==='south'?`COMNAP Nov 2024 · ${researchBases.length} research bases · ${supportFacilities.length} other Treaty-area facilities`:`Arctic reference · ${arcticVerified.length} verified mapped · ${arcticReference.length} reference-only mapped`}</span></div>
+        </div>
+        <div class="dashboard-side">
+          <div class="panel">
+            <div class="panel-head"><div><h2>Recent Activity</h2><p>Latest cross-module events.</p></div><button class="button ghost small" data-go="activity">View all</button></div>
+            <div class="activity-list">${d.activity.slice(0,6).map(a=>activityRow(a)).join('')||'<div class="empty" style="min-height:130px"><div><strong>No recent activity</strong>Mission events will appear here.</div></div>'}</div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div><h2>Top Operational Risks</h2><p>Exceptions requiring attention.</p></div></div>
+            <div class="risk-list">${d.risks.length?d.risks.slice(0,5).map(r=>`<div class="risk-item ${r.severity}"><div class="risk-icon">!</div><div><strong>${esc(r.title)}</strong><span>${esc(r.detail)}</span></div></div>`).join(''):`<div class="risk-summary"><div class="risk-ring">${riskScore}</div><div><strong>Controlled</strong><p>No current threshold exceptions.</p></div></div>`}</div>
+          </div>
+        </div>
       </div>`;
     $$('[data-go]').forEach(b=>b.onclick=()=>navigate(b.dataset.go));
+    initLiveMissionMap(d.locations,d.vehicles,d.personnel,d.expedition,publicFacilities,arcticStations);
+    bindMapFullscreen();
   }
+
+  function polarMarker(kind,label){
+    const glyph=kind==='vehicle'?'▣':kind==='person'?'●':kind==='camp'?'▲':'⌂';
+    return L.divIcon({className:'polar-leaflet-icon',html:`<span class="pm ${kind}">${glyph}</span><em>${esc(label)}</em>`,iconSize:[120,34],iconAnchor:[17,17]});
+  }
+  function initLiveMissionMap(locations,vehicles,personnel,expedition,publicFacilities=[],arcticStations=[]){
+    const el=$('#liveMissionMap');
+    if(!el||!window.L)return;
+    destroyLiveMap();
+    const fixed=locations.filter(x=>Number.isFinite(Number(x.latitude))&&Number.isFinite(Number(x.longitude)));
+    const vehiclePoints=vehicles.filter(v=>Number.isFinite(Number(v.latitude))&&Number.isFinite(Number(v.longitude)));
+    const peoplePoints=personnel.filter(p=>Number.isFinite(Number(p.live_latitude))&&Number.isFinite(Number(p.live_longitude)));
+    const researchBases=publicFacilities.filter(f=>f.facility_type==='Station'&&Number.isFinite(Number(f.latitude))&&Number.isFinite(Number(f.longitude)));
+    const supportFacilities=publicFacilities.filter(f=>f.facility_type!=='Station'&&Number.isFinite(Number(f.latitude))&&Number.isFinite(Number(f.longitude)));
+    const arcticVerified=arcticStations.filter(f=>String(f.verification_status||'').startsWith('verified_')&&Number.isFinite(+f.latitude)&&Number.isFinite(+f.longitude)&&+f.latitude>=55);
+    const arcticReference=arcticStations.filter(f=>!String(f.verification_status||'').startsWith('verified_')&&Number.isFinite(+f.latitude)&&Number.isFinite(+f.longitude)&&+f.latitude>=55);
+    const missionCoords=[...fixed.map(x=>[+x.latitude,+x.longitude]),...vehiclePoints.map(x=>[+x.latitude,+x.longitude]),...peoplePoints.map(x=>[+x.live_latitude,+x.live_longitude])];
+    const pole=poleForRegion(expedition?.region);
+    const fallback=pole==='north'?[78.7,15]:[-75,40];
+    state.liveMap=L.map(el,{zoomControl:true,attributionControl:false,worldCopyJump:false,minZoom:2,maxZoom:18,zoomAnimation:false,fadeAnimation:false,markerZoomAnimation:false}).setView(fallback,pole==='north'?4:3);
+    const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+      maxZoom:18,updateWhenIdle:true,keepBuffer:1
+    });
+    const topo=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',{
+      maxZoom:18,updateWhenIdle:true,keepBuffer:1
+    });
+    const missionLayer=L.layerGroup().addTo(state.liveMap);
+    const researchLayer=L.layerGroup();
+    const supportLayer=L.layerGroup();
+    const arcticVerifiedLayer=L.layerGroup();
+    const arcticReferenceLayer=L.layerGroup();
+    satellite.addTo(state.liveMap);
+    if(pole==='south'&&researchBases.length)researchLayer.addTo(state.liveMap);
+    if(pole==='north'&&arcticVerified.length)arcticVerifiedLayer.addTo(state.liveMap);
+    const overlays={'Mission operations':missionLayer};
+    if(pole==='south'&&researchBases.length)overlays[`Research bases (${researchBases.length})`]=researchLayer;
+    if(pole==='south'&&supportFacilities.length)overlays[`Other facilities (${supportFacilities.length})`]=supportLayer;
+    if(pole==='north'&&arcticVerified.length)overlays[`Verified research sites (${arcticVerified.length})`]=arcticVerifiedLayer;
+    if(pole==='north'&&arcticReference.length)overlays[`Reference-only sites (${arcticReference.length})`]=arcticReferenceLayer;
+    L.control.layers({'Satellite':satellite,'Topographic':topo},overlays,{position:'topright',collapsed:false}).addTo(state.liveMap);
+    addMapDataControl(state.liveMap);
+    const base=fixed.find(x=>/base|station|hub/i.test(`${x.name} ${x.type}`))||fixed[0];
+    if(base){
+      fixed.filter(x=>x.id!==base.id).forEach(x=>L.polyline([[+base.latitude,+base.longitude],[+x.latitude,+x.longitude]],{color:'#0b78e3',weight:2,dashArray:'7 7',opacity:.65}).addTo(missionLayer));
+    }
+    fixed.forEach(x=>{
+      const kind=/camp/i.test(x.type)?'camp':'location';
+      L.marker([+x.latitude,+x.longitude],{icon:polarMarker(kind,x.name)}).addTo(missionLayer)
+        .bindPopup(`<strong>${esc(x.name)}</strong><br>${esc(x.type)}<br><small>${n(x.latitude,5)}, ${n(x.longitude,5)}</small>`);
+    });
+    vehiclePoints.forEach(v=>{
+      const marker=L.marker([+v.latitude,+v.longitude],{icon:polarMarker('vehicle',`${v.code} ${v.telemetry_recorded_at?'LIVE':''}`)}).addTo(missionLayer)
+        .bindPopup(`<strong>${esc(v.code)} · ${esc(v.name)}</strong><br>${esc(v.status)} · ${n(v.fuel_percent)}% fuel${v.telemetry_recorded_at?`<br><b>LIVE GPS</b> · ${ago(v.telemetry_recorded_at)}`:''}`);
+      state.liveMarkers.vehicle.set(Number(v.id),marker);
+    });
+    peoplePoints.forEach(p=>{
+      const marker=L.marker([+p.live_latitude,+p.live_longitude],{icon:polarMarker('person',`${p.name} LIVE`)}).addTo(missionLayer)
+        .bindPopup(`<strong>${esc(p.name)}</strong><br>${esc(p.role)}<br><b>LIVE GPS</b> · ${ago(p.telemetry_recorded_at)}`);
+      state.liveMarkers.personnel.set(Number(p.id),marker);
+    });
+    if(pole==='south'){
+      researchBases.forEach(f=>{
+        const open=String(f.status||'').toLowerCase()==='open';
+        L.circleMarker([+f.latitude,+f.longitude],{
+          radius:5,weight:1.5,color:open?'#6b46ce':'#d48a16',
+          fillColor:open?'#8a63df':'#f0a52a',fillOpacity:.88
+        }).addTo(researchLayer)
+          .bindTooltip(esc(f.name),{direction:'top',sticky:true,opacity:.95})
+          .bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">COMNAP RESEARCH BASE</span><strong>${esc(f.name)}</strong><br>${esc(f.country||f.programme||'Antarctic programme')}<br>${esc(f.seasonality||'')} · ${esc(f.status||'Status not supplied')}<br><small>${n(f.latitude,5)}, ${n(f.longitude,5)}</small><br><button class="popup-profile-btn" onclick="window.PolarOpsFeatures.openFacilityProfile('south',${f.id})">Facility profile</button></div>`);
+      });
+      supportFacilities.forEach(f=>{
+        L.circleMarker([+f.latitude,+f.longitude],{
+          radius:4,weight:1,color:'#0f7e9f',fillColor:'#25a9c7',fillOpacity:.72
+        }).addTo(supportLayer)
+          .bindTooltip(esc(f.name),{direction:'top',sticky:true,opacity:.95})
+          .bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">COMNAP ${esc(String(f.facility_type||'FACILITY').toUpperCase())}</span><strong>${esc(f.name)}</strong><br>${esc(f.country||f.programme||'Antarctic programme')}<br>${esc(f.seasonality||'')} · ${esc(f.status||'Status not supplied')}<br><small>${n(f.latitude,5)}, ${n(f.longitude,5)}</small></div>`);
+      });
+    }
+    if(pole==='north'){
+      arcticVerified.forEach(f=>{
+        L.circleMarker([+f.latitude,+f.longitude],{radius:5,weight:1.5,color:'#6b46ce',fillColor:'#8a63df',fillOpacity:.88})
+          .addTo(arcticVerifiedLayer)
+          .bindTooltip(esc(f.name),{direction:'top',sticky:true,opacity:.95})
+          .bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">VERIFIED ARCTIC RESEARCH SITE</span><strong>${esc(f.name)}</strong><br>${esc(f.location||'Location not supplied')}<br>${esc(f.operating_country||'Operator/country not supplied')}<br><small>${esc(f.verification_source||'Current verification source')}</small><br><small>${n(f.latitude,5)}, ${n(f.longitude,5)} · ${esc(f.coordinate_precision||'reference coordinates')}</small>${f.verification_url?`<br><a href="${esc(f.verification_url)}" target="_blank" rel="noopener">Verification proof ↗</a>`:''}<br><button class="popup-profile-btn" onclick="window.PolarOpsFeatures.openFacilityProfile('north',${f.id})">Facility profile</button></div>`);
+      });
+      arcticReference.forEach(f=>{
+        L.circleMarker([+f.latitude,+f.longitude],{radius:4,weight:1.2,color:'#7d8994',fillColor:'#a8b1b8',fillOpacity:.72})
+          .addTo(arcticReferenceLayer)
+          .bindTooltip(`${esc(f.name)} · reference only`,{direction:'top',sticky:true,opacity:.95})
+          .bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">REFERENCE — NOT VERIFIED CURRENT</span><strong>${esc(f.name)}</strong><br>${esc(f.location||'Location not supplied')}<br>${esc(f.operating_country||'Country not supplied')}<br><small>${esc(f.verification_note||'Reference data only')}</small><br><small>${n(f.latitude,5)}, ${n(f.longitude,5)} · ${esc(f.coordinate_precision||'reference coordinates')}</small></div>`);
+      });
+    }
+    addMissionMapLegend(state.liveMap,pole,{
+      research: pole==='south'?researchBases.length:arcticVerified.length,
+      support: pole==='south'?supportFacilities.length:0,
+      reference: pole==='north'?arcticReference.length:0
+    });
+    const overviewCoords=pole==='south'&&researchBases.length
+      ? [...missionCoords,...researchBases.map(f=>[+f.latitude,+f.longitude])]
+      : pole==='north'&&arcticVerified.length
+        ? [...missionCoords,...arcticVerified.map(f=>[+f.latitude,+f.longitude])]
+        : missionCoords;
+    if(overviewCoords.length===1)state.liveMap.setView(overviewCoords[0],7);
+    else if(overviewCoords.length>1)state.liveMap.fitBounds(L.latLngBounds(overviewCoords).pad(.08),{maxZoom:pole==='south'?4:pole==='north'?4:7,animate:false});
+    setTimeout(()=>state.liveMap?.invalidateSize(),50);
+  }
+
+  function addMapDataControl(){
+    // Map-data attribution button intentionally removed from all PolarOps maps.
+  }
+
+  function addMissionMapLegend(map,pole,counts={}){
+    if(!map||!window.L)return;
+    const control=L.control({position:'bottomleft'});
+    control.onAdd=()=>{
+      const div=L.DomUtil.create('div','mission-map-legend');
+      div.innerHTML=`<strong>Map legend</strong>
+        <span><i class="legend-symbol location">⌂</i>Mission base / location</span>
+        <span><i class="legend-symbol vehicle">▣</i>Vehicle / mobile asset</span>
+        <span><i class="legend-symbol person">●</i>Personnel live GPS</span>
+        ${counts.research?`<span><i class="legend-dot research"></i>${pole==='south'?'COMNAP research base':'Verified research site'}</span>`:''}
+        ${pole==='south'&&counts.research?'<span><i class="legend-dot closed"></i>Temporarily closed base</span>':''}
+        ${counts.support?'<span><i class="legend-dot support"></i>Other public facility</span>':''}
+        ${counts.reference?'<span><i class="legend-dot reference"></i>Reference only — not verified current</span>':''}`;
+      L.DomEvent.disableClickPropagation(div);
+      return div;
+    };
+    control.addTo(map);
+  }
+
+  function bindPanelMapFullscreen(panelId,buttonId){
+    const panel=$('#'+panelId),button=$('#'+buttonId);
+    if(!panel||!button)return;
+    const refresh=()=>{
+      const active=document.fullscreenElement===panel||panel.classList.contains('map-panel-fullscreen');
+      button.textContent=active?'⛶ Exit fullscreen':'⛶ Fullscreen';
+      button.title=active?'Exit fullscreen map':'Open map fullscreen';
+      setTimeout(()=>state.liveMap?.invalidateSize(),80);
+    };
+    button.onclick=async()=>{
+      try{
+        if(document.fullscreenEnabled&&panel.requestFullscreen){
+          if(document.fullscreenElement===panel)await document.exitFullscreen();
+          else await panel.requestFullscreen();
+        }else{
+          panel.classList.toggle('map-panel-fullscreen');
+          document.body.classList.toggle('map-fullscreen-open',panel.classList.contains('map-panel-fullscreen'));
+          refresh();
+        }
+      }catch{
+        panel.classList.toggle('map-panel-fullscreen');
+        document.body.classList.toggle('map-fullscreen-open',panel.classList.contains('map-panel-fullscreen'));
+        refresh();
+      }
+    };
+    document.onfullscreenchange=refresh;
+  }
+  function bindMapFullscreen(){bindPanelMapFullscreen('dashboardMapPanel','mapFullscreen')}
+
   function stat(label,value,detail,ico,kind=''){return `<div class="stat ${kind}"><div class="stat-head"><span class="stat-label">${label}</span><span class="stat-icon">${ico}</span></div><div class="stat-value">${value}</div><div class="stat-detail">${esc(detail)}</div></div>`}
   function activityRow(a){return `<div class="activity-item"><div class="activity-icon">${({personnel:'◎',cargo:'▣',inventory:'▤',vehicle:'▱',incident:'△',asset:'◇',location:'⌖'})[a.category]||'•'}</div><div><strong>${esc(a.message)}</strong><span>${a.user_name?`By ${esc(a.user_name)}`:'System event'}</span></div><time>${fmtTime(a.created_at)}</time></div>`}
 
@@ -252,7 +639,7 @@
   async function loadLocations(){ return api(`/api/locations?expedition_id=${state.expeditionId}`); }
   function locationOptions(locations,selected){ return `<option value="">Unassigned</option>`+locations.map(l=>`<option value="${l.id}" ${Number(selected)===l.id?'selected':''}>${esc(l.name)}</option>`).join(''); }
   function modal(title,subtitle,body,wide=false){ $('#modalRoot').innerHTML=`<div class="modal-backdrop"><div class="modal ${wide?'wide':''}"><div class="modal-head"><div><span class="eyebrow">POLAROPS WORKFLOW</span><h2>${esc(title)}</h2>${subtitle?`<p>${esc(subtitle)}</p>`:''}</div><button class="modal-close">×</button></div>${body}</div></div>`; $('.modal-close').onclick=closeModal; $('.modal-backdrop').onclick=e=>{if(e.target.classList.contains('modal-backdrop'))closeModal()}; }
-  function closeModal(){ $('#modalRoot').innerHTML=''; if(state.deferredRealtime){state.deferredRealtime=false;clearTimeout(state.realtimeRender);state.realtimeRender=setTimeout(()=>renderView(),100)} }
+  function closeModal(){ $('#modalRoot').innerHTML=''; if(state.deferredRealtime){state.deferredRealtime=false;clearTimeout(state.realtimeRender);if(state.view!=='overview')state.realtimeRender=setTimeout(()=>renderView(),250)} }
   function formVal(form,name){ return form.elements[name]?.value ?? ''; }
   function numOrNull(v){ return v===''?null:Number(v); }
 
@@ -384,36 +771,227 @@
     if($('#dispatch'))$('#dispatch').onclick=async()=>{try{const r=await api(`/api/incidents/${i.id}/dispatch`,{method:'POST'});toast('Response dispatched',`${r.vehicle_code} · ${r.distance_km} km`);renderEmergency()}catch(err){toast('Dispatch failed',err.message,'danger')}};
     if($('#resolve'))$('#resolve').onclick=async()=>{if(!confirm(`Resolve ${i.code}?`))return;try{await api(`/api/incidents/${i.id}/resolve`,{method:'POST'});toast('Incident resolved',i.code);renderEmergency()}catch(err){toast('Resolve failed',err.message,'danger')}};
     $('#addEvent').onclick=()=>openIncidentNote(i);
+    window.PolarOpsFeatures?.enhanceIncidentCommand?.(i);
   }
   async function openIncidentCreate(){ const locs=await loadLocations(); modal('Trigger emergency','Create an incident and assemble response context immediately.',`<form id="incidentForm"><div class="form-grid"><div class="field"><label>Incident title</label><input name="title" value="Field Emergency" required></div><div class="field"><label>Type</label><select name="type"><option>Field Emergency</option><option>Medical</option><option>Vehicle</option><option>Weather</option><option>Missing Personnel</option><option>Fire</option></select></div><div class="field"><label>Severity</label><select name="severity"><option>Critical</option><option selected>High</option><option>Medium</option><option>Low</option></select></div><div class="field"><label>Location</label><select name="location_id" required>${locationOptions(locs)}</select></div><div class="field"><label>Personnel affected</label><input type="number" name="affected_count" min="0" value="0"></div><div class="field full"><label>Description</label><textarea name="description" placeholder="What happened and what is known right now?"></textarea></div></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button danger">Trigger incident</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#incidentForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget,p={expedition_id:state.expeditionId,title:formVal(f,'title'),type:formVal(f,'type'),severity:formVal(f,'severity'),location_id:Number(formVal(f,'location_id')),description:formVal(f,'description'),affected_count:Number(formVal(f,'affected_count')||0)};if(!p.location_id){toast('Location required','Select the incident location.','danger');return}try{const r=await api('/api/incidents',{method:'POST',body:JSON.stringify(p)});closeModal();state.view='emergency';$$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view==='emergency'));toast('Emergency activated',r.code,'danger');renderEmergency()}catch(err){toast('Incident creation failed',err.message,'danger')}}; }
   function openIncidentNote(i){ modal('Add incident timeline note',i.code,`<form id="eventForm"><div class="field"><label>Event type</label><input name="event_type" value="Update"></div><div class="field"><label>Operational note</label><textarea name="note" required placeholder="Response team reached staging point…"></textarea></div><div class="modal-actions"><button type="button" class="button ghost" data-cancel>Cancel</button><button class="button primary">Add note</button></div></form>`);$('[data-cancel]').onclick=closeModal;$('#eventForm').onsubmit=async e=>{e.preventDefault();const f=e.currentTarget;try{await api(`/api/incidents/${i.id}/events`,{method:'POST',body:JSON.stringify({event_type:formVal(f,'event_type'),note:formVal(f,'note')})});closeModal();toast('Timeline updated');renderEmergency()}catch(err){toast('Update failed',err.message,'danger')}}; }
 
+  async function renderEnvironment(force=false){
+    const exp=state.expeditions.find(e=>e.id===state.expeditionId);
+    setHeader('Environment & Science',`${exp?.region||'Polar region'} · live and near-real-time environmental intelligence.`);
+    $('#view').innerHTML='<div class="panel"><div class="empty" style="min-height:300px"><div><strong>Loading polar environment…</strong>Checking weather, sea ice, space weather and seismic feeds.</div></div></div>';
+    let r;
+    try{
+      r=await api(`/api/environment/overview?expedition_id=${state.expeditionId}${force?'&force=true':''}`);
+    }catch(err){
+      $('#view').innerHTML=`<div class="panel"><div class="empty" style="min-height:300px"><div><strong>Environmental feeds unavailable</strong>${esc(err.message)}</div></div></div>`;
+      return;
+    }
+    const d=r.data||{}, w=d.weather, sea=d.sea_ice, space=d.space_weather, quakes=d.earthquakes;
+    const pole=r.pole==='north'?'Arctic / North':'Antarctic / South';
+    const errors=Object.keys(r.errors||{});
+    const base=r.primary_location?.name||'No mapped base';
+    const kp=Number(space?.estimated_kp);
+    const kpKind=Number.isFinite(kp)&&kp>=5?'danger':Number.isFinite(kp)&&kp>=4?'warn':'good';
+    const quakeCount=quakes?.count??0;
+    $('#view').innerHTML=`
+      <div class="science-hero ${r.pole}">
+        <div><span class="eyebrow">POLAR ENVIRONMENT / ${esc(pole.toUpperCase())}</span><h2>Operational environment + science picture</h2><p>Public environmental feeds are separated from private personnel and logistics telemetry. Every external product is labelled with its source and update cadence.</p></div>
+        <div class="science-actions"><span class="badge ${errors.length?'warn':'good'}">${errors.length?`${errors.length} feed issue${errors.length===1?'':'s'}`:'Feeds connected'}</span><button class="button secondary" id="refreshEnvironment">↻ Refresh live data</button></div>
+      </div>
+      <div class="environment-stats">
+        <div class="env-stat ${w?'good':'warn'}"><span>Weather · ${esc(base)}</span><strong>${w?.temperature_c==null?'—':`${n(w.temperature_c,1)} °C`}</strong><small>${w?`${n(w.wind_speed_kph,1)} km/h wind · gusts ${n(w.wind_gusts_kph,1)} km/h`:'Feed unavailable'}</small></div>
+        <div class="env-stat info"><span>Sea ice product</span><strong>${sea?.date||'—'}</strong><small>${sea?.freshness||'NOAA/NSIDC daily product'}</small></div>
+        <div class="env-stat ${kpKind}"><span>Geomagnetic Kp</span><strong>${Number.isFinite(kp)?n(kp,2):'—'}</strong><small>${space?`${esc(space.communications_risk)} level · ${fmtDate(space.time_tag)}`:'NOAA SWPC unavailable'}</small></div>
+        <div class="env-stat ${quakeCount?'warn':'good'}"><span>Polar earthquakes</span><strong>${quakeCount}</strong><small>M4+ · last ${quakes?.period_days||30} days</small></div>
+      </div>
+      <div class="science-grid">
+        <section class="panel science-visual">
+          <div class="panel-head"><div><h2>Daily sea-ice concentration</h2><p>NOAA/NSIDC Sea Ice Index v4 · ${esc(pole)}</p></div>${sea?.date?`<span class="badge info">${esc(sea.date)}</span>`:''}</div>
+          ${sea?.concentration_image?`<img class="science-feed-image" src="${esc(sea.concentration_image)}" alt="Latest ${esc(pole)} sea ice concentration from NOAA NSIDC" loading="lazy">`:`<div class="empty" style="min-height:260px"><div><strong>Sea-ice image unavailable</strong>${esc(r.errors?.sea_ice||'')}</div></div>`}
+          <div class="feed-caption"><span>Daily satellite-derived concentration; not a certified navigation chart.</span>${sea?.source_url?`<a href="${esc(sea.source_url)}" target="_blank" rel="noopener">Open NSIDC source ↗</a>`:''}</div>
+        </section>
+        <section class="panel science-visual">
+          <div class="panel-head"><div><h2>Latest auroral forecast</h2><p>NOAA SWPC OVATION · high-latitude space-weather context</p></div>${space?.aurora?.time_tag?`<span class="badge ${kpKind}">${fmtDate(space.aurora.time_tag)}</span>`:''}</div>
+          ${space?.aurora?.image_url?`<img class="science-feed-image" src="${esc(space.aurora.image_url)}" alt="Latest ${esc(pole)} NOAA SWPC auroral forecast" loading="lazy">`:`<div class="empty" style="min-height:260px"><div><strong>Aurora image unavailable</strong>${esc(r.errors?.space_weather||'')}</div></div>`}
+          <div class="feed-caption"><span>Kp/OVATION are indicators; radio impact depends on frequency, equipment and local conditions.</span>${space?.source_url?`<a href="${esc(space.source_url)}" target="_blank" rel="noopener">Open NOAA SWPC ↗</a>`:''}</div>
+        </section>
+      </div>
+      <div class="science-grid lower">
+        <section class="panel">
+          <div class="panel-head"><div><h2>Recent polar earthquakes</h2><p>USGS M4+ events · last ${quakes?.period_days||30} days · ${esc(pole)}</p></div><span class="badge info">${quakeCount} events</span></div>
+          ${quakes?.events?.length?`<div class="table-wrap compact-table"><table><thead><tr><th>UTC</th><th>Magnitude</th><th>Location</th><th>Depth</th></tr></thead><tbody>${quakes.events.slice(0,10).map(q=>`<tr><td>${fmtDate(q.time)}</td><td><strong>M${n(q.magnitude,1)}</strong></td><td>${q.detail_url?`<a href="${esc(q.detail_url)}" target="_blank" rel="noopener">${esc(q.place||'Polar region')}</a>`:esc(q.place||'Polar region')}</td><td>${n(q.depth_km,1)} km</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty" style="min-height:150px"><div><strong>No M4+ events returned</strong>${esc(r.errors?.earthquakes||'No qualifying events in this period.')}</div></div>`}
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><h2>Current conditions</h2><p>Model current conditions at the primary mapped mission location.</p></div></div>
+          ${w?`<div class="weather-grid environment-weather">
+            <div><span>Temperature</span><strong>${w.temperature_c==null?'—':`${n(w.temperature_c,1)} °C`}</strong></div>
+            <div><span>Feels like</span><strong>${w.apparent_temperature_c==null?'—':`${n(w.apparent_temperature_c,1)} °C`}</strong></div>
+            <div><span>Humidity</span><strong>${w.relative_humidity==null?'—':`${n(w.relative_humidity)}%`}</strong></div>
+            <div><span>Wind</span><strong>${w.wind_speed_kph==null?'—':`${n(w.wind_speed_kph,1)} km/h`}</strong></div>
+            <div><span>Gusts</span><strong>${w.wind_gusts_kph==null?'—':`${n(w.wind_gusts_kph,1)} km/h`}</strong></div>
+            <div><span>Pressure</span><strong>${w.surface_pressure_hpa==null?'—':`${n(w.surface_pressure_hpa,1)} hPa`}</strong></div>
+          </div><div class="feed-caption"><span>${esc(w.source)} · ${fmtDate(w.observed_at)} UTC</span><a href="${esc(w.source_url)}" target="_blank" rel="noopener">Weather source ↗</a></div>`:`<div class="empty" style="min-height:180px"><div><strong>No weather coordinates available</strong>Add a mapped station/base/camp to this expedition.</div></div>`}
+        </section>
+      </div>
+      <section class="panel" style="margin-top:10px">
+        <div class="panel-head"><div><h2>Authoritative polar data & mapping tools</h2><p>Selected operational and scientific resources for commanders, logistics teams and researchers.</p></div></div>
+        <div class="resource-grid">${(r.resources||[]).map(x=>`<a class="resource-card" href="${esc(x.url)}" target="_blank" rel="noopener"><span>${esc(x.category)}</span><strong>${esc(x.name)}</strong><p>${esc(x.detail)}</p><small>${esc(x.update)}</small></a>`).join('')}</div>
+      </section>
+      <div class="environment-disclaimer"><strong>Operational boundary:</strong> these public feeds support situational awareness and science planning. They do not replace national programme instructions, certified navigation products, local observations, aviation briefings, medical protocols or authorized worker/vehicle telemetry.</div>
+    `;
+    const refresh=$('#refreshEnvironment');
+    if(refresh)refresh.onclick=()=>renderEnvironment(true);
+  }
+
+  function arcticVerificationBadge(r){
+    const status=String(r.verification_status||'');
+    if(status==='verified_current')return badge('Verified current','good');
+    if(status==='verified_component')return badge('Current component','info');
+    if(status==='current_network_addition')return badge('Current addition','good');
+    return badge('Reference only','warn');
+  }
+
+  function arcticCoordinateBadge(r){
+    const p=String(r.coordinate_precision||'');
+    if(p==='official_facility')return badge('Official coordinates','good');
+    if(p==='station_page')return badge('Station reference','info');
+    if(p==='location_reference')return badge('Approx. location','warn');
+    return badge('Unmapped','warn');
+  }
+
+  async function renderArcticNetwork(){
+    setHeader('Arctic Research Network','Verified current research infrastructure separated from reference-only station records.');
+    const [locs,env,network]=await Promise.all([
+      loadLocations(),
+      api(`/api/environment/overview?expedition_id=${state.expeditionId}`),
+      api('/api/public/arctic-research-stations')
+    ]);
+    const resources=env.resources||[];
+    const summary=network.summary||{};
+    const referenceItems=network.reference_items||[];
+    const additions=network.current_additions||[];
+    const mappedVerified=(network.items||[]).filter(r=>String(r.verification_status||'').startsWith('verified_')&&Number.isFinite(+r.latitude)&&Number.isFinite(+r.longitude)&&+r.latitude>=55);
+    const mappedReference=referenceItems.filter(r=>!String(r.verification_status||'').startsWith('verified_')&&Number.isFinite(+r.latitude)&&Number.isFinite(+r.longitude)&&+r.latitude>=55);
+    $('#view').innerHTML=`
+      <div class="source-strip network-source-strip">
+        <div><span>Supplied reference rows</span><strong>${summary.user_reference_rows??referenceItems.length}</strong></div>
+        <div><span>Independently verified</span><strong>${summary.verified_reference_rows??'—'}</strong></div>
+        <div><span>Current additions found</span><strong>${summary.current_network_additions??additions.length}</strong></div>
+        <div><span>Mapped reference rows</span><strong>${summary.mapped_rows??'—'}</strong></div>
+        <div class="source-note"><strong>ARCTIC / NORTH</strong><span>Population values are reference values, not live occupancy. Verified-current labels require a named current research-network or operator source.</span></div>
+      </div>
+      <section class="panel network-map-panel dashboard-map-panel" id="arcticNetworkPanel">
+        <div class="panel-head"><div><h2>Arctic Research Stations Map</h2><p>Verified current stations are enabled by default. Reference-only records are a separate optional layer.</p></div><div class="panel-actions"><span class="badge violet">${mappedVerified.length} VERIFIED MAPPED</span><button class="button ghost small" id="arcticNetworkFullscreen" type="button">⛶ Fullscreen</button></div></div>
+        <div id="arcticMissionMap" class="facility-network-map arctic-research-map"></div>
+        <div class="live-map-note"><span>● Mission coordinates remain private/operator-controlled</span><span>${mappedVerified.length} verified mapped · ${mappedReference.length} reference-only mapped</span></div>
+      </section>
+      <section class="panel" style="margin-top:13px">
+        <div class="panel-head"><div><h2>Verification sources</h2><p>Proof links used to distinguish current research infrastructure from reference-only records.</p></div></div>
+        <div class="resource-grid">${(network.sources||[]).map(x=>`<a class="resource-card" href="${esc(x.url)}" target="_blank" rel="noopener"><span>VERIFICATION SOURCE</span><strong>${esc(x.name)}</strong><p>${esc(x.role)}</p><small>Open source ↗</small></a>`).join('')}</div>
+        <div class="environment-disclaimer" style="margin-top:10px"><strong>Verification rule:</strong> ${esc(network.warning||'Reference rows are not assumed to be currently operational.')}</div>
+      </section>
+      <section class="panel" style="margin-top:13px">
+        <div class="panel-head"><div><h2>Your Arctic station reference — checked</h2><p>All ${referenceItems.length} supplied rows are retained. Verified/current status is shown separately from the supplied name, establishment year and reference population.</p></div></div>
+        <div class="table-wrap arctic-reference-table"><table><thead><tr><th>Station</th><th>Location</th><th>Operating country</th><th>Established</th><th>Reference population</th><th>Verification</th><th>Map precision</th></tr></thead><tbody>
+          ${referenceItems.map(r=>`<tr><td><strong>${esc(r.name)}</strong><small>${esc(r.verification_note||'')}</small></td><td>${esc(r.location||'—')}</td><td>${esc(r.operating_country||'—')}</td><td>${esc(r.established||'—')}</td><td><strong>${esc(r.summer_population||'—')}</strong><small>summer · winter ${esc(r.winter_population||'—')}</small></td><td>${arcticVerificationBadge(r)}${r.verification_url?`<small><a href="${esc(r.verification_url)}" target="_blank" rel="noopener">Proof ↗</a></small>`:''}</td><td>${arcticCoordinateBadge(r)}</td></tr>`).join('')}
+        </tbody></table></div>
+      </section>
+      <section class="panel current-additions-panel" style="margin-top:13px">
+        <div class="panel-head"><div><h2>Current network additions absent from your supplied table</h2><p>These are current INTERACT or Ny-Ålesund network entries that were not represented as distinct rows in your 58-station reference list.</p></div><span class="badge good">${additions.length} CURRENT ADDITIONS</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Station / infrastructure</th><th>Current network location</th><th>Verification source</th><th>Map status</th></tr></thead><tbody>
+          ${additions.map(r=>`<tr><td><strong>${esc(r.name)}</strong></td><td>${esc(r.location||'—')}</td><td><strong>${esc(r.verification_source||'Current network')}</strong><small><a href="${esc(r.verification_url)}" target="_blank" rel="noopener">Proof ↗</a></small></td><td>${arcticCoordinateBadge(r)}</td></tr>`).join('')}
+        </tbody></table></div>
+      </section>
+      <section class="panel" style="margin-top:13px"><div class="panel-head"><div><h2>Arctic science & observing resources</h2><p>Public portals for research datasets, observing networks, sea ice and satellite context.</p></div></div><div class="resource-grid">${resources.map(x=>`<a class="resource-card" href="${esc(x.url)}" target="_blank" rel="noopener"><span>${esc(x.category)}</span><strong>${esc(x.name)}</strong><p>${esc(x.detail)}</p><small>${esc(x.update)}</small></a>`).join('')}</div></section>
+      <section class="panel source-disclaimer" style="margin-top:13px"><div class="panel-head"><div><h2>Data boundaries</h2><p>Reference infrastructure is never treated as private live operations.</p></div></div><div class="data-boundary-grid"><div><strong>Mission operations</strong><span>Your roster, vehicle GPS, cargo, inventory and incident data remain organization-controlled.</span></div><div><strong>Research infrastructure</strong><span>INTERACT and official operator sources verify current research infrastructure. The supplied table remains separately attributable reference data.</span></div><div><strong>Occupancy</strong><span>Summer/winter population numbers from the supplied table are not live personnel counts and are never displayed as such.</span></div></div></section>`;
+    initArcticMissionMap(locs,network.items||[]);
+    bindPanelMapFullscreen('arcticNetworkPanel','arcticNetworkFullscreen');
+  }
+
+  function initArcticMissionMap(locs,stations=[]){
+    const el=$('#arcticMissionMap');
+    if(!el||!window.L)return;
+    destroyLiveMap();
+    const mission=locs.filter(l=>Number.isFinite(+l.latitude)&&Number.isFinite(+l.longitude)&&+l.latitude>=50);
+    const verified=stations.filter(r=>String(r.verification_status||'').startsWith('verified_')&&Number.isFinite(+r.latitude)&&Number.isFinite(+r.longitude)&&+r.latitude>=55);
+    const reference=stations.filter(r=>!String(r.verification_status||'').startsWith('verified_')&&Number.isFinite(+r.latitude)&&Number.isFinite(+r.longitude)&&+r.latitude>=55);
+    state.liveMap=L.map(el,{zoomControl:true,attributionControl:false,minZoom:2,maxZoom:18,worldCopyJump:false,zoomAnimation:false,fadeAnimation:false,markerZoomAnimation:false}).setView([72,0],3);
+    const topo=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:18,updateWhenIdle:true,keepBuffer:1});
+    const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:18,updateWhenIdle:true,keepBuffer:1});
+    const missionLayer=L.layerGroup().addTo(state.liveMap);
+    const verifiedLayer=L.layerGroup().addTo(state.liveMap);
+    const referenceLayer=L.layerGroup();
+    topo.addTo(state.liveMap);
+    L.control.layers({'Topographic':topo,'Satellite':satellite},{'Mission locations':missionLayer,[`Verified current research (${verified.length})`]:verifiedLayer,[`Reference only (${reference.length})`]:referenceLayer},{position:'topright',collapsed:false}).addTo(state.liveMap);
+    addMapDataControl(state.liveMap);
+    mission.forEach(l=>L.circleMarker([+l.latitude,+l.longitude],{radius:6,weight:1.5,color:'#087f9d',fillColor:'#0ca8c1',fillOpacity:.88}).addTo(missionLayer).bindPopup(`<strong>${esc(l.name)}</strong><br>${esc(l.type||'Mission location')}<br><small>${n(l.latitude,5)}, ${n(l.longitude,5)}</small>`));
+    verified.forEach(r=>L.circleMarker([+r.latitude,+r.longitude],{radius:5,weight:1.4,color:'#6b46ce',fillColor:'#8a63df',fillOpacity:.88}).addTo(verifiedLayer).bindTooltip(esc(r.name),{direction:'top',sticky:true}).bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">VERIFIED CURRENT</span><strong>${esc(r.name)}</strong><br>${esc(r.location||'')}<br>${esc(r.operating_country||'')}<br><small>${esc(r.verification_source||'')}</small>${r.verification_url?`<br><a href="${esc(r.verification_url)}" target="_blank" rel="noopener">Proof ↗</a>`:''}<br><button class="popup-profile-btn" onclick="window.PolarOpsFeatures.openFacilityProfile('north',${r.id})">Facility profile</button></div>`));
+    reference.forEach(r=>L.circleMarker([+r.latitude,+r.longitude],{radius:4,weight:1.1,color:'#7d8994',fillColor:'#a8b1b8',fillOpacity:.70}).addTo(referenceLayer).bindTooltip(`${esc(r.name)} · reference only`,{direction:'top',sticky:true}).bindPopup(`<div class="public-facility-popup"><span class="popup-kicker">REFERENCE ONLY</span><strong>${esc(r.name)}</strong><br>${esc(r.location||'')}<br><small>${esc(r.verification_note||'Not independently verified current.')}</small></div>`));
+    const legend=L.control({position:'bottomleft'});
+    legend.onAdd=()=>{const d=L.DomUtil.create('div','mission-map-legend');d.innerHTML='<strong>Map legend</strong><span><i class="legend-dot mission"></i>Mission location</span><span><i class="legend-dot research"></i>Verified current research</span><span><i class="legend-dot reference"></i>Reference only</span>';L.DomEvent.disableClickPropagation(d);return d};legend.addTo(state.liveMap);
+    const bounds=[...mission.map(x=>[+x.latitude,+x.longitude]),...verified.map(x=>[+x.latitude,+x.longitude])];
+    if(bounds.length>1)state.liveMap.fitBounds(L.latLngBounds(bounds).pad(.10),{maxZoom:4,animate:false});
+    else if(bounds.length===1)state.liveMap.setView(bounds[0],6);
+    setTimeout(()=>state.liveMap?.invalidateSize(),60);
+  }
+
+  function historicalVerificationBadge(r){
+    const status=String(r.verification_status||'');
+    if(status==='current_successor')return badge('Current successor',r.current_status==='Temporarily Closed'?'warn':'good');
+    if(status==='current_joint_facility')return badge('Current joint facility',r.current_status==='Temporarily Closed'?'warn':'good');
+    if(status==='current_subantarctic')return badge('Current · subantarctic','info');
+    if(status.startsWith('current_'))return badge(r.current_status==='Temporarily Closed'?'Current · temporarily closed':'Verified current',r.current_status==='Temporarily Closed'?'warn':'good');
+    if(status==='historical_subantarctic_not_current')return badge('Historical · subantarctic','info');
+    return badge('Historical only','warn');
+  }
+
   async function renderNetwork(){
+    if(currentPole()==='north'){await renderArcticNetwork();return}
     setHeader('Antarctic Network','Official public facilities reference data, live environmental conditions and mission-base import.');
-    const [sources,data]=await Promise.all([
+    const [sources,data,reference]=await Promise.all([
       api('/api/data-sources'),
-      api('/api/public/facilities?limit=1000')
+      api('/api/public/facilities?limit=1000'),
+      api('/api/public/research-stations-reference')
     ]);
     const facilities=data.items||[], countries=data.countries||[];
+    const referenceStations=reference.items||[];
+    const currentOnly=reference.current_only||[];
+    const verificationSummary=reference.summary||{};
+    const scopeCounts=verificationSummary.scope_counts||{};
     const comnap=(sources.sources||[]).find(x=>x.name==='COMNAP Facilities');
     $('#view').innerHTML=`
       <div class="source-strip network-source-strip">
         <div><span>Public facilities</span><strong>${data.total||0}</strong></div>
         <div><span>Countries/programmes</span><strong>${countries.length}</strong></div>
         <div><span>Facility source</span><strong>COMNAP</strong></div>
+        <div><span>Historical map rows</span><strong>${reference.total||referenceStations.length}</strong></div>
+        <div><span>Verified current rows</span><strong>${verificationSummary.current_rows??'—'}</strong></div>
+        <div><span>Current-only facilities</span><strong>${verificationSummary.current_only_facilities??'—'}</strong></div>
         <div><span>Current weather</span><strong>Open-Meteo</strong></div>
         <div class="source-note"><strong>${esc(comnap?.last_status||'Never synced')}</strong><span>${comnap?.last_sync?`Last facility sync ${fmtDate(comnap.last_sync)}`:'Sync the official COMNAP facilities CSV to populate the global directory.'}</span></div>
       </div>
+      <section class="panel network-map-panel"><div class="panel-head"><div><h2>Antarctic Treaty-area Facilities Map</h2><p>Current COMNAP facilities at or south of 60°S. Subantarctic records and coordinate anomalies stay in the directory but are not silently plotted as Antarctic bases.</p></div><span class="badge info">${scopeCounts.antarctic_treaty_area??0} Treaty-area</span></div>${facilities.length?'<div id="facilityNetworkMap" class="facility-network-map"></div><div class="live-map-note"><span>● Public infrastructure reference — not live occupancy</span><span>COMNAP Nov 2024 · '+(scopeCounts.subantarctic_reference||0)+' subantarctic · '+(scopeCounts.coordinate_anomaly||0)+' coordinate review</span></div>':'<div class="empty" style="min-height:220px"><div><strong>No facility map data yet</strong>Sync COMNAP to populate the official COMNAP directory.</div></div>'}</section>
       <section class="panel"><div class="panel-head"><div><h2>Antarctic Facilities Directory</h2><p>Reference facilities from national Antarctic programmes. This directory is public infrastructure metadata—not permission to use another operator's facility.</p></div><div class="panel-actions"><input class="search" id="facilitySearch" placeholder="Station, country or programme…"><select class="search" id="facilityCountry"><option value="">All countries</option>${countries.map(c=>`<option value="${esc(c.country)}">${esc(c.country)} (${c.count})</option>`).join('')}</select>${roleCan('commander','logistics')?'<button class="button secondary" id="syncFacilities">↻ Sync COMNAP</button>':''}</div></div>
         ${facilities.length?`<div class="table-wrap"><table><thead><tr><th>Facility</th><th>Country / Programme</th><th>Type</th><th>Operation</th><th>Coordinates</th><th>Current conditions</th><th>Actions</th></tr></thead><tbody id="facilityRows"></tbody></table></div>`:`<div class="empty" style="min-height:320px"><div><strong>No public facilities synchronized yet</strong>Press “Sync COMNAP” to download the official COMNAP Antarctic Facilities List into PolarOps. Internet access is required for the first sync.</div></div>`}
       </section>
-      <section class="panel source-disclaimer" style="margin-top:13px"><div class="panel-head"><div><h2>Data boundaries</h2><p>Keep public reference data separate from private operational data.</p></div></div><div class="data-boundary-grid"><div><strong>Public reference</strong><span>Facility names, operators, coordinates and status from COMNAP.</span></div><div><strong>Live environment</strong><span>Current model conditions for facility coordinates from Open-Meteo; not a station instrument feed.</span></div><div><strong>Workers</strong><span>Live worker rosters/locations come only from your authorized feed, field check-ins or consented device GPS. PolarOps does not scrape people.</span></div></div></section>`;
+      <section class="panel historical-stations-panel" style="margin-top:13px"><div class="panel-head"><div><h2>Research Stations Map — Verified Reference</h2><p>${esc(reference.warning||'Historical reference only.')} The supplied map lists ${referenceStations.length} numbered rows.</p></div><div class="panel-actions"><a class="button secondary" href="${esc(reference.source_url||'/research-stations-map.pdf')}" target="_blank" rel="noopener">Historical PDF</a><a class="button secondary" href="${esc(reference.current_source_info_url||'https://www.comnap.aq/antarctic-facilities-information')}" target="_blank" rel="noopener">Current COMNAP proof</a><a class="button secondary" href="https://add.scar.org/" target="_blank" rel="noopener">BAS/SCAR map</a></div></div>
+        <div class="reference-source-note"><strong>${esc(reference.source||'COMNAP Research Stations Map')}</strong><span>Historical source: ${esc(reference.source_period||'1998-2005')} · verified against ${esc(reference.current_source_period||'November 2024')} current COMNAP facilities. Historical names never overwrite current operational status.</span></div>
+        <div class="verification-summary"><div><span>Historical rows</span><strong>${verificationSummary.historical_rows??referenceStations.length}</strong></div><div><span>Current counterparts</span><strong>${verificationSummary.current_rows??'—'}</strong></div><div><span>Unique current facilities</span><strong>${verificationSummary.unique_current_matches??'—'}</strong></div><div><span>Historical only</span><strong>${verificationSummary.historical_only_rows??'—'}</strong></div><div><span>Temporarily closed</span><strong>${verificationSummary.temporarily_closed_matches??'—'}</strong></div></div>
+        <div class="table-wrap reference-table-wrap"><table><thead><tr><th>Map #</th><th>Historical station</th><th>Country</th><th>Verification</th><th>Current COMNAP counterpart</th></tr></thead><tbody>${referenceStations.map(r=>`<tr><td class="mono">${r.map_number}</td><td><strong>${esc(r.station_name)}</strong><small>${esc(r.verification_note||'')}</small></td><td>${esc(r.country)}</td><td>${historicalVerificationBadge(r)}</td><td>${r.current_name?`<strong>${esc(r.current_name)}</strong><small>${esc(r.current_type||'Facility')} · ${esc(r.current_seasonality||'')} · ${esc(r.current_status||'')}</small>`:'<span class="muted">Not in Nov 2024 current directory</span>'}</td></tr>`).join('')}</tbody></table></div>
+      </section>
+      <section class="panel current-additions-panel" style="margin-top:13px"><div class="panel-head"><div><h2>Current COMNAP entries absent from the 1998–2005 map</h2><p>Verified current-directory facilities not represented by the supplied historical map. Absence from the old map does not necessarily mean a facility was built after 2005.</p></div><div class="panel-actions"><span class="badge info">${verificationSummary.current_only_facilities??currentOnly.length} facilities</span><span class="badge good">${verificationSummary.current_only_stations??0} stations</span></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Facility</th><th>Operator</th><th>Type</th><th>Established</th><th>Operation</th><th>Source scope</th></tr></thead><tbody>${currentOnly.map(f=>`<tr><td><strong>${esc(f.name)}</strong><small>${esc(f.antarctic_region||'Region not supplied')}</small></td><td>${esc(f.country||f.programme||'—')}</td><td>${badge(f.facility_type||'Facility','info')}</td><td>${esc(f.year_established||'—')}</td><td><strong>${esc(f.status||'—')}</strong><small>${esc(f.seasonality||'')}</small></td><td>${f.geographic_scope==='antarctic_treaty_area'?badge('Treaty area','good'):f.geographic_scope==='subantarctic_reference'?badge('Subantarctic','info'):badge('Coordinate review','danger')}${f.coordinate_warning?`<small>${esc(f.coordinate_warning)}</small>`:''}</td></tr>`).join('')}</tbody></table></div>
+      </section>
+      <section class="panel source-disclaimer" style="margin-top:13px"><div class="panel-head"><div><h2>Data boundaries</h2><p>Keep public reference data separate from private operational data.</p></div></div><div class="data-boundary-grid"><div><strong>Current public reference</strong><span>Facility names, operators, coordinates and status from the November 2024 COMNAP facilities data.</span></div><div><strong>Historical map reference</strong><span>The supplied COMNAP research-stations map is preserved as a separate 1998–2005 reference and never overwrites current facility status.</span></div><div><strong>Workers</strong><span>Live worker rosters/locations come only from your authorized feed, field check-ins or consented device GPS. PolarOps does not scrape people.</span></div></div></section>`;
     if(facilities.length){
+      initFacilityNetworkMap(facilities);
       const paint=()=>{
         const q=($('#facilitySearch')?.value||'').toLowerCase(), country=$('#facilityCountry')?.value||'';
         const shown=facilities.filter(f=>(!country||f.country===country)&&[f.name,f.country,f.programme,f.facility_type,f.status].join(' ').toLowerCase().includes(q));
         $('#facilityRows').innerHTML=shown.map(f=>facilityRow(f)).join('')||'<tr><td colspan="7">No matching facilities.</td></tr>';
         $$('[data-facility-weather]').forEach(b=>b.onclick=()=>openFacilityWeather(facilities.find(x=>x.id===+b.dataset.facilityWeather)));
+        $$('[data-facility-profile]').forEach(b=>b.onclick=()=>window.PolarOpsFeatures.openFacilityProfile('south',+b.dataset.facilityProfile));
         $$('[data-facility-import]').forEach(b=>b.onclick=()=>importFacility(facilities.find(x=>x.id===+b.dataset.facilityImport)));
       };
       $('#facilitySearch').oninput=paint;$('#facilityCountry').onchange=paint;paint();
@@ -431,9 +1009,29 @@
       } catch(err){toast('COMNAP sync failed',err.message,'danger',6000);b.disabled=false;b.textContent='↻ Sync COMNAP'}
     };
   }
+  function initFacilityNetworkMap(facilities){
+    const el=$('#facilityNetworkMap');
+    if(!el||!window.L)return;
+    destroyLiveMap();
+    const points=facilities.filter(f=>f.geographic_scope==='antarctic_treaty_area'&&Number.isFinite(+f.latitude)&&Number.isFinite(+f.longitude));
+    state.liveMap=L.map(el,{zoomControl:true,attributionControl:false,minZoom:2,maxZoom:18,worldCopyJump:false,zoomAnimation:false,fadeAnimation:false,markerZoomAnimation:false}).setView([-74,20],2);
+    const satellite=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:18,updateWhenIdle:true,keepBuffer:1});
+    const topo=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',{maxZoom:18,updateWhenIdle:true,keepBuffer:1});
+    topo.addTo(state.liveMap);
+    L.control.layers({'Topographic':topo,'Satellite':satellite},null,{position:'topright',collapsed:true}).addTo(state.liveMap);
+    addMapDataControl(state.liveMap);
+    points.forEach(f=>{
+      const open=String(f.status||'').toLowerCase()==='open';
+      L.circleMarker([+f.latitude,+f.longitude],{radius:5,weight:1.5,color:open?'#0877d4':'#d48a16',fillColor:open?'#118bea':'#f2a52a',fillOpacity:.86}).addTo(state.liveMap)
+        .bindPopup(`<strong>${esc(f.name)}</strong><br>${esc(f.country||'Antarctic programme')} · ${esc(f.facility_type||'Facility')}<br>${esc(f.seasonality||'')} · ${esc(f.status||'Status not supplied')}<br><small>${n(f.latitude,5)}, ${n(f.longitude,5)}</small>`);
+    });
+    if(points.length>1)state.liveMap.fitBounds(L.latLngBounds(points.map(f=>[+f.latitude,+f.longitude])).pad(.04),{maxZoom:4,animate:false});
+    setTimeout(()=>state.liveMap?.invalidateSize(),60);
+  }
+
   function facilityRow(f){
     const weather=f.weather_observed_at?`<strong>${f.temperature_c==null?'—':`${n(f.temperature_c,1)} °C`}</strong><small>${f.wind_speed_kph==null?'':`${n(f.wind_speed_kph,1)} km/h wind · `}${fmtDate(f.weather_observed_at)} UTC</small>`:'<span class="muted">Not loaded</span>';
-    return `<tr><td><strong>${esc(f.name)}</strong><small>${esc(f.status||'Status not supplied')}</small></td><td><strong>${esc(f.country||'—')}</strong><small>${esc(f.programme||'Programme not supplied')}</small></td><td>${badge(f.facility_type||'Facility','info')}</td><td>${esc(f.seasonality||'—')}</td><td class="mono"><strong>${f.latitude==null?'—':n(f.latitude,5)}</strong><small>${f.longitude==null?'—':n(f.longitude,5)}</small></td><td>${weather}</td><td><div class="row-actions"><button class="icon-btn" data-facility-weather="${f.id}">Weather</button>${roleCan('commander','logistics')?`<button class="icon-btn" data-facility-import="${f.id}">Add to mission</button>`:''}</div></td></tr>`;
+    return `<tr><td><strong>${esc(f.name)}</strong><small>${esc(f.status||'Status not supplied')}</small></td><td><strong>${esc(f.country||'—')}</strong><small>${esc(f.programme||'Programme not supplied')}</small></td><td>${badge(f.facility_type||'Facility','info')}</td><td>${esc(f.seasonality||'—')}</td><td class="mono"><strong>${f.latitude==null?'—':n(f.latitude,5)}</strong><small>${f.longitude==null?'—':n(f.longitude,5)}</small></td><td>${weather}</td><td><div class="row-actions"><button class="icon-btn" data-facility-profile="${f.id}">Profile</button><button class="icon-btn" data-facility-weather="${f.id}">Weather</button>${roleCan('commander','logistics')?`<button class="icon-btn" data-facility-import="${f.id}">Add to mission</button>`:''}</div></td></tr>`;
   }
   async function openFacilityWeather(f){
     if(!f)return;
@@ -496,11 +1094,14 @@
   async function downloadBackup(){ try{const res=await fetch('/api/backup',{headers:{Authorization:`Bearer ${state.token}`}});if(!res.ok)throw new Error('Backup request failed');const blob=await res.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`polarops-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(url);toast('Backup downloaded')}catch(err){toast('Backup failed',err.message,'danger')} }
 
   async function init(){
-    if('serviceWorker'in navigator){ try{await navigator.serviceWorker.register('/service-worker.js');state.serviceWorker=true}catch{} }
+    if('serviceWorker'in navigator){
+      navigator.serviceWorker.register('/service-worker.js').then(()=>{state.serviceWorker=true}).catch(()=>{});
+    }
     if(!state.token){renderLogin();return}
     try{await bootAuthed()}catch{renderLogin()}
   }
 
+  window.PolarOpsCore={state,api,$,$$,esc,toast,modal,closeModal,navigate,setHeader,stat,badge,statusKind,fmtDate,fmtTime,n,numOrNull,formVal,loadLocations,destroyLiveMap,addMapDataControl,bindPanelMapFullscreen,roleCan};
   window.PolarOps={navigate,logout,renderView,connectRealtime,stopPersonnelGps,stopVehicleSimulation};
   init();
 })();

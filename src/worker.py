@@ -1,206 +1,46 @@
 from __future__ import annotations
 
-import base64
-import csv
-import hashlib
-import hmac
-import io
 import json
 import math
-import re
-import time
 import urllib.parse
-import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
-import asgi
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel, Field
-from workers import DurableObject, Response, WorkerEntrypoint, fetch as cf_fetch
-from js import WebSocketPair
+from workers import Response, WorkerEntrypoint, asgi, fetch as cf_fetch
 
-APP_VERSION = "2.0.0-cloudflare"
-DEFAULT_COMNAP_URL = "https://www.comnap.aq/s/Facilities_Nov2024.csv"
-DEFAULT_OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-TOKEN_HOURS = 12
-
-app = FastAPI(title="PolarOps Cloudflare", version=APP_VERSION)
+from api.dependencies import current_user, ensure_expedition_access, require
+from app import app
+from core.config import APP_VERSION, env_value, required_env_value
+from core.security import (
+    decode_ws_ticket,
+    hash_password,
+    make_token,
+    make_ws_ticket,
+    verify_password,
+)
+from core.time import utcnow
+from database.d1 import (
+    last_row_id,
+    q_all,
+    q_batch,
+    q_first,
+    q_value,
+    q_write,
+    q_write_batch,
+    to_py,
+)
+from integrations.parsing import parse_coord
+from realtime.broadcaster import broadcast
+from realtime.expedition_room import ExpeditionRoom
+from repositories.activity import log_activity
+from services.relationship_service import valid_location_ids, valid_personnel_ids
+from services.realtime_access_service import realtime_ticket_allows_expedition
 
 
 # ----------------------------- Generic helpers -----------------------------
-
-def utcnow() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def env_value(env, name: str, default: str = "") -> str:
-    try:
-        value = getattr(env, name)
-        if value is None:
-            return default
-        return str(value)
-    except Exception:
-        return default
-
-
-def to_py(value):
-    if value is None:
-        return None
-    try:
-        return value.to_py()
-    except Exception:
-        return value
-
-
-async def q_all(env, sql: str, *params) -> list[dict]:
-    stmt = env.DB.prepare(sql)
-    if params:
-        stmt = stmt.bind(*params)
-    result = await stmt.run()
-    rows = to_py(result.results)
-    return list(rows or [])
-
-
-async def q_first(env, sql: str, *params) -> Optional[dict]:
-    stmt = env.DB.prepare(sql)
-    if params:
-        stmt = stmt.bind(*params)
-    row = await stmt.first()
-    row = to_py(row)
-    return dict(row) if row else None
-
-
-async def q_value(env, sql: str, *params, key: str = "c"):
-    row = await q_first(env, sql, *params)
-    return row.get(key) if row else None
-
-
-async def q_write(env, sql: str, *params):
-    stmt = env.DB.prepare(sql)
-    if params:
-        stmt = stmt.bind(*params)
-    return await stmt.run()
-
-
-def last_row_id(result) -> int:
-    try:
-        return int(result.meta.last_row_id)
-    except Exception:
-        meta = to_py(getattr(result, "meta", {})) or {}
-        return int(meta.get("last_row_id") or 0)
-
-
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or uuid.uuid4().hex.encode()
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 180_000)
-    return (
-        "pbkdf2_sha256$180000$"
-        + base64.urlsafe_b64encode(salt).decode()
-        + "$"
-        + base64.urlsafe_b64encode(digest).decode()
-    )
-
-
-def verify_password(password: str, encoded: str) -> bool:
-    try:
-        algo, rounds, salt_b64, digest_b64 = encoded.split("$", 3)
-        if algo != "pbkdf2_sha256":
-            return False
-        salt = base64.urlsafe_b64decode(salt_b64.encode())
-        expected = base64.urlsafe_b64decode(digest_b64.encode())
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, int(rounds))
-        return hmac.compare_digest(actual, expected)
-    except Exception:
-        return False
-
-
-def make_token(user: dict, secret: str) -> str:
-    payload = {
-        "uid": user["id"],
-        "oid": user["organization_id"],
-        "email": user["email"],
-        "role": user["role"],
-        "exp": int(time.time() + TOKEN_HOURS * 3600),
-    }
-    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
-    sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).digest()
-    return raw + "." + base64.urlsafe_b64encode(sig).decode().rstrip("=")
-
-
-def decode_token(token: str, secret: str) -> dict:
-    try:
-        raw, sig = token.split(".", 1)
-        expected = base64.urlsafe_b64encode(
-            hmac.new(secret.encode(), raw.encode(), hashlib.sha256).digest()
-        ).decode().rstrip("=")
-        if not hmac.compare_digest(sig, expected):
-            raise ValueError("bad signature")
-        payload = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
-        if payload.get("exp", 0) < time.time():
-            raise ValueError("expired")
-        return payload
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-
-
-async def current_user(request: Request) -> dict:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    env = request.scope["env"]
-    secret = env_value(env, "AUTH_SECRET", "dev-only-change-me")
-    payload = decode_token(auth[7:], secret)
-    user = await q_first(
-        env,
-        "SELECT id,organization_id,email,name,role,active,created_at FROM users WHERE id=?",
-        payload["uid"],
-    )
-    if not user or not user.get("active"):
-        raise HTTPException(status_code=401, detail="User is inactive")
-    return user
-
-
-def require(*roles: str):
-    async def dep(user=Depends(current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(status_code=403, detail="Insufficient permission")
-        return user
-    return dep
-
-
-async def ensure_expedition_access(env, user: dict, expedition_id: int) -> dict:
-    exp = await q_first(env, "SELECT * FROM expeditions WHERE id=?", expedition_id)
-    if not exp or int(exp["organization_id"]) != int(user["organization_id"]):
-        raise HTTPException(status_code=404, detail="Expedition not found")
-    return exp
-
-
-async def log_activity(env, expedition_id: int, category: str, message: str, user_id: int | None = None):
-    await q_write(
-        env,
-        "INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
-        expedition_id, category, message, user_id, utcnow(),
-    )
-
-
-async def broadcast(env, expedition_id: int, event_type: str, entity_type: str, entity_id: int | None = None, data: dict | None = None):
-    try:
-        stub = env.EXPEDITION_ROOM.getByName(str(expedition_id))
-        payload = json.dumps({
-            "type": event_type,
-            "expedition_id": expedition_id,
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "server_time": utcnow(),
-            "data": data or {},
-        }, separators=(",", ":"))
-        await stub.broadcast_json(payload)
-    except Exception:
-        # A failed real-time notification must never roll back the database mutation.
-        pass
-
 
 def haversine_km(lat1, lon1, lat2, lon2):
     if None in (lat1, lon1, lat2, lon2):
@@ -211,35 +51,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     dl = math.radians(float(lon2) - float(lon1))
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def parse_coord(value: Any) -> float | None:
-    if value is None or str(value).strip() == "":
-        return None
-    text = str(value).strip().replace(",", ".")
-    try:
-        return float(text)
-    except Exception:
-        pass
-    nums = [float(x) for x in re.findall(r"[-+]?\d+(?:\.\d+)?", text)]
-    if not nums:
-        return None
-    sign = -1 if any(x in text.upper() for x in ("S", "W")) else 1
-    if nums[0] < 0:
-        sign = -1
-    deg = abs(nums[0])
-    minutes = nums[1] if len(nums) > 1 else 0
-    seconds = nums[2] if len(nums) > 2 else 0
-    return sign * (deg + minutes / 60 + seconds / 3600)
-
-
-def pick(row: dict, *names: str) -> str:
-    normalized = {str(k).strip().lower(): v for k, v in row.items()}
-    for name in names:
-        value = normalized.get(name.strip().lower())
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return ""
 
 
 async def latest_telemetry(env, expedition_id: int, entity_type: str | None = None) -> list[dict]:
@@ -459,7 +270,7 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(self), camera=(self)"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; "
+        "img-src 'self' data: blob: https://server.arcgisonline.com https://noaadata.apps.nsidc.org https://services.swpc.noaa.gov; media-src 'self' blob:; connect-src 'self' ws: wss:; "
         "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     )
     if request.url.path.startswith("/api/"):
@@ -473,9 +284,9 @@ async def security_headers(request: Request, call_next):
 async def login(data: LoginIn, request: Request):
     env = request.scope["env"]
     row = await q_first(env, "SELECT * FROM users WHERE lower(email)=lower(?)", data.email.strip())
-    if not row or not row.get("active") or not verify_password(data.password, row["password_hash"]):
+    if not row or not row.get("active") or not await verify_password(data.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    token = make_token(row, env_value(env, "AUTH_SECRET", "dev-only-change-me"))
+    token = make_token(row, required_env_value(env, "AUTH_SECRET"))
     return {"token": token, "user": {k: row[k] for k in ("id", "organization_id", "email", "name", "role")}}
 
 
@@ -484,13 +295,46 @@ async def me(user=Depends(current_user)):
     return user
 
 
+@app.get("/api/bootstrap")
+async def bootstrap(request: Request, expedition_id: int | None = None, user=Depends(current_user)):
+    env = request.scope["env"]
+    expeditions_rows = await q_all(
+        env,
+        "SELECT * FROM expeditions WHERE organization_id=? ORDER BY id DESC",
+        user["organization_id"],
+    )
+    if not expeditions_rows:
+        return {"user": user, "expeditions": [], "expedition_id": None, "dashboard": None}
+    allowed_ids = {int(row["id"]) for row in expeditions_rows}
+    selected_id = int(expedition_id) if expedition_id is not None and int(expedition_id) in allowed_ids else int(expeditions_rows[0]["id"])
+    dashboard_data = await dashboard(selected_id, request, user)
+    return {
+        "user": user,
+        "expeditions": expeditions_rows,
+        "expedition_id": selected_id,
+        "dashboard": dashboard_data,
+    }
+
+
+@app.get("/api/realtime/ticket")
+async def realtime_ticket(expedition_id: int, request: Request, user=Depends(current_user)):
+    env = request.scope["env"]
+    await ensure_expedition_access(env, user, expedition_id)
+    secret = required_env_value(env, "AUTH_SECRET")
+    return {
+        "ticket": make_ws_ticket(user, expedition_id, secret, 60),
+        "expedition_id": expedition_id,
+        "expires_in": 60,
+    }
+
+
 @app.post("/api/me/password")
 async def change_password(data: PasswordChange, request: Request, user=Depends(current_user)):
     env = request.scope["env"]
     row = await q_first(env, "SELECT password_hash FROM users WHERE id=?", user["id"])
-    if not row or not verify_password(data.current_password, row["password_hash"]):
+    if not row or not await verify_password(data.current_password, row["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    await q_write(env, "UPDATE users SET password_hash=? WHERE id=?", hash_password(data.new_password), user["id"])
+    await q_write(env, "UPDATE users SET password_hash=? WHERE id=?", await hash_password(data.new_password), user["id"])
     return {"ok": True}
 
 
@@ -512,7 +356,7 @@ async def add_user(data: UserCreate, request: Request, user=Depends(require("com
         result = await q_write(
             env,
             "INSERT INTO users(organization_id,email,name,role,password_hash,active,created_at) VALUES(?,?,?,?,?,1,?)",
-            user["organization_id"], data.email.strip().lower(), data.name, data.role, hash_password(data.password), utcnow(),
+            user["organization_id"], data.email.strip().lower(), data.name, data.role, await hash_password(data.password), utcnow(),
         )
     except Exception:
         raise HTTPException(409, "Email already exists")
@@ -544,7 +388,25 @@ async def add_expedition(data: ExpeditionIn, request: Request, user=Depends(requ
         "INSERT INTO expeditions(organization_id,name,region,start_date,end_date,status,description,created_at) VALUES(?,?,?,?,?,?,?,?)",
         user["organization_id"], data.name, data.region, data.start_date, data.end_date, data.status, data.description, utcnow(),
     )
-    return {"id": last_row_id(r)}
+    expedition_id = last_row_id(r)
+    ts = utcnow()
+    defaults = [
+        ("Personnel", "Personnel roster and field-team assignments confirmed", "Expedition Lead"),
+        ("Medical", "Medical kits and evacuation plan checked", "Medical Officer"),
+        ("Communications", "Primary and backup communications tested", "Communications"),
+        ("Vehicles", "Vehicle serviceability and recovery equipment checked", "Logistics"),
+        ("Fuel", "Fuel reserve verified against planned traverse", "Logistics"),
+        ("Food", "Food and field rations checked against team duration", "Logistics"),
+        ("Emergency", "Emergency shelters, beacons and recovery equipment checked", "Expedition Lead"),
+        ("Permits", "Required permits and operating documents reviewed", "Expedition Lead"),
+        ("Weather", "Forecast and operating thresholds reviewed", "Expedition Lead"),
+        ("Route", "Route, alternates and check-in points reviewed", "Field Team Lead"),
+    ]
+    await q_write_batch(env, [(
+        "INSERT INTO readiness_items(expedition_id,category,label,status,owner,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+        (expedition_id, category, label, "Pending", owner, ts, ts),
+    ) for category, label, owner in defaults])
+    return {"id": expedition_id}
 
 
 @app.patch("/api/expeditions/{item_id}")
@@ -592,6 +454,8 @@ async def edit_location(item_id: int, data: LocationIn, request: Request, user=D
     if not row:
         raise HTTPException(404, "Location not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if int(data.expedition_id) != int(row["expedition_id"]):
+        raise HTTPException(400, "Location cannot be moved between expeditions")
     await q_write(env, "UPDATE locations SET name=?,type=?,latitude=?,longitude=? WHERE id=?", data.name, data.type, data.latitude, data.longitude, item_id)
     await log_activity(env, row["expedition_id"], "location", f"Location updated: {data.name}", user["id"])
     await broadcast(env, row["expedition_id"], "location.updated", "location", item_id)
@@ -673,16 +537,32 @@ async def telemetry_history(expedition_id: int, entity_type: str, entity_id: int
 async def dashboard(expedition_id: int, request: Request, user=Depends(current_user)):
     env = request.scope["env"]
     exp = await ensure_expedition_access(env, user, expedition_id)
-    personnel = await q_all(env, "SELECT p.*,l.name location_name,l.latitude,l.longitude FROM personnel p LEFT JOIN locations l ON l.id=p.location_id WHERE p.expedition_id=?", expedition_id)
-    cargo = await q_all(env, "SELECT c.*,l.name location_name,d.name destination_name FROM cargo c LEFT JOIN locations l ON l.id=c.current_location_id LEFT JOIN locations d ON d.id=c.destination_location_id WHERE c.expedition_id=?", expedition_id)
-    inventory = await q_all(env, "SELECT i.*,l.name location_name FROM inventory_items i LEFT JOIN locations l ON l.id=i.location_id WHERE i.expedition_id=?", expedition_id)
-    vehicles = await q_all(env, "SELECT v.*,l.name location_name,l.latitude,l.longitude FROM vehicles v LEFT JOIN locations l ON l.id=v.location_id WHERE v.expedition_id=?", expedition_id)
-    locations = await q_all(env, "SELECT * FROM locations WHERE expedition_id=?", expedition_id)
-    incidents = await q_all(env, "SELECT i.*,l.name location_name FROM incidents i LEFT JOIN locations l ON l.id=i.location_id WHERE i.expedition_id=? ORDER BY i.id DESC", expedition_id)
-    activity = await q_all(env, "SELECT a.*,u.name user_name FROM activity a LEFT JOIN users u ON u.id=a.user_id WHERE a.expedition_id=? ORDER BY a.id DESC LIMIT 12", expedition_id)
-    assets_count = int(await q_value(env, "SELECT COUNT(*) c FROM assets WHERE expedition_id=?", expedition_id) or 0)
-    ppos = await latest_telemetry(env, expedition_id, "personnel")
-    vpos = await latest_telemetry(env, expedition_id, "vehicle")
+    latest_sql = """
+        SELECT t.* FROM telemetry_positions t
+        JOIN (
+          SELECT entity_type,entity_id,MAX(id) max_id
+          FROM telemetry_positions
+          WHERE expedition_id=? AND entity_type=?
+          GROUP BY entity_type,entity_id
+        ) latest ON latest.max_id=t.id
+        ORDER BY t.entity_type,t.entity_id
+    """
+    (
+        personnel, cargo, inventory, vehicles, locations,
+        incidents, activity, assets_rows, ppos, vpos,
+    ) = await q_batch(env, [
+        ("SELECT p.*,l.name location_name,l.latitude,l.longitude FROM personnel p LEFT JOIN locations l ON l.id=p.location_id WHERE p.expedition_id=?", (expedition_id,)),
+        ("SELECT c.*,l.name location_name,d.name destination_name FROM cargo c LEFT JOIN locations l ON l.id=c.current_location_id LEFT JOIN locations d ON d.id=c.destination_location_id WHERE c.expedition_id=?", (expedition_id,)),
+        ("SELECT i.*,l.name location_name FROM inventory_items i LEFT JOIN locations l ON l.id=i.location_id WHERE i.expedition_id=?", (expedition_id,)),
+        ("SELECT v.*,l.name location_name,l.latitude,l.longitude FROM vehicles v LEFT JOIN locations l ON l.id=v.location_id WHERE v.expedition_id=?", (expedition_id,)),
+        ("SELECT * FROM locations WHERE expedition_id=?", (expedition_id,)),
+        ("SELECT i.*,l.name location_name FROM incidents i LEFT JOIN locations l ON l.id=i.location_id WHERE i.expedition_id=? ORDER BY i.id DESC", (expedition_id,)),
+        ("SELECT a.*,u.name user_name FROM activity a LEFT JOIN users u ON u.id=a.user_id WHERE a.expedition_id=? ORDER BY a.id DESC LIMIT 12", (expedition_id,)),
+        ("SELECT COUNT(*) c FROM assets WHERE expedition_id=?", (expedition_id,)),
+        (latest_sql, (expedition_id, "personnel")),
+        (latest_sql, (expedition_id, "vehicle")),
+    ])
+    assets_count = int(assets_rows[0].get("c") if assets_rows else 0)
     apply_live_positions(personnel, ppos)
     apply_live_positions(vehicles, vpos)
 
@@ -734,6 +614,8 @@ async def list_personnel(expedition_id: int, request: Request, user=Depends(curr
 async def add_personnel(data: PersonnelIn, request: Request, user=Depends(require("commander", "logistics"))):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(env, data.expedition_id, data.location_id):
+        raise HTTPException(400, "Personnel location must belong to this expedition")
     r = await q_write(env, "INSERT INTO personnel(expedition_id,name,role,team,location_id,status,last_checkin,contact,clearance_status,source,is_synthetic,created_at) VALUES(?,?,?,?,?,?,?,?,?,'manual',0,?)", data.expedition_id, data.name, data.role, data.team, data.location_id, data.status, utcnow(), data.contact, data.clearance_status, utcnow())
     pid = last_row_id(r)
     await log_activity(env, data.expedition_id, "personnel", f"Personnel added: {data.name}", user["id"])
@@ -747,6 +629,8 @@ async def edit_personnel(item_id: int, data: PersonnelPatch, request: Request, u
     row = await q_first(env, "SELECT expedition_id,name FROM personnel WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Personnel not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if not await valid_location_ids(env, row["expedition_id"], data.location_id):
+        raise HTTPException(400, "Personnel location must belong to this expedition")
     await patch_row(env, "personnel", item_id, data.model_dump(), {"name", "role", "team", "location_id", "status", "contact", "clearance_status"})
     await log_activity(env, row["expedition_id"], "personnel", f"{row['name']} personnel record updated", user["id"])
     await broadcast(env, row["expedition_id"], "personnel.updated", "personnel", item_id)
@@ -760,6 +644,8 @@ async def checkin(item_id: int, data: CheckinIn, request: Request, user=Depends(
     if not row: raise HTTPException(404, "Personnel not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
     loc = data.location_id if data.location_id is not None else row.get("location_id")
+    if not await valid_location_ids(env, row["expedition_id"], loc):
+        raise HTTPException(400, "Check-in location must belong to this expedition")
     now = utcnow()
     await q_write(env, "UPDATE personnel SET location_id=?,status=?,last_checkin=? WHERE id=?", loc, data.status, now, item_id)
     lname = await q_first(env, "SELECT name FROM locations WHERE id=?", loc) if loc else None
@@ -795,13 +681,27 @@ async def list_cargo(expedition_id: int, request: Request, user=Depends(current_
 async def add_cargo(data: CargoIn, request: Request, user=Depends(require("commander", "logistics"))):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(
+        env,
+        data.expedition_id,
+        data.origin_location_id,
+        data.destination_location_id,
+        data.current_location_id,
+    ):
+        raise HTTPException(400, "Cargo locations must belong to this expedition")
+    now = utcnow()
     try:
-        r = await q_write(env, "INSERT INTO cargo(expedition_id,code,name,priority,origin_location_id,destination_location_id,current_location_id,status,quantity,unit,assigned_to,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", data.expedition_id, data.code, data.name, data.priority, data.origin_location_id, data.destination_location_id, data.current_location_id, data.status, data.quantity, data.unit, data.assigned_to, utcnow())
+        results = await q_write_batch(env, [
+            ("INSERT INTO cargo(expedition_id,code,name,priority,origin_location_id,destination_location_id,current_location_id,status,quantity,unit,assigned_to,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+             (data.expedition_id, data.code, data.name, data.priority, data.origin_location_id, data.destination_location_id, data.current_location_id, data.status, data.quantity, data.unit, data.assigned_to, now)),
+            ("INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) SELECT id,?,?,?,?,? FROM cargo WHERE expedition_id=? AND code=?",
+             (data.current_location_id, "Registered", "Cargo registered", user["id"], now, data.expedition_id, data.code)),
+            ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+             (data.expedition_id, "cargo", f"Cargo {data.code} registered: {data.name}", user["id"], now)),
+        ])
     except Exception:
         raise HTTPException(409, "Cargo code already exists")
-    cid = last_row_id(r)
-    await q_write(env, "INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?,?)", cid, data.current_location_id, "Registered", "Cargo registered", user["id"], utcnow())
-    await log_activity(env, data.expedition_id, "cargo", f"Cargo {data.code} registered: {data.name}", user["id"])
+    cid = last_row_id(results[0])
     await broadcast(env, data.expedition_id, "cargo.created", "cargo", cid)
     return {"id": cid}
 
@@ -812,6 +712,8 @@ async def edit_cargo(item_id: int, data: CargoPatch, request: Request, user=Depe
     row = await q_first(env, "SELECT expedition_id,code FROM cargo WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Cargo not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if not await valid_location_ids(env, row["expedition_id"], data.destination_location_id):
+        raise HTTPException(400, "Cargo destination must belong to this expedition")
     await patch_row(env, "cargo", item_id, data.model_dump(), {"name", "priority", "destination_location_id", "assigned_to"})
     await log_activity(env, row["expedition_id"], "cargo", f"Cargo {row['code']} updated", user["id"])
     await broadcast(env, row["expedition_id"], "cargo.updated", "cargo", item_id)
@@ -824,10 +726,18 @@ async def move_cargo(item_id: int, data: CargoMove, request: Request, user=Depen
     row = await q_first(env, "SELECT expedition_id,code FROM cargo WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Cargo not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
-    await q_write(env, "UPDATE cargo SET current_location_id=?,status=? WHERE id=?", data.location_id, data.status, item_id)
-    await q_write(env, "INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?,?)", item_id, data.location_id, data.status, data.note, user["id"], utcnow())
-    loc = await q_first(env, "SELECT name FROM locations WHERE id=?", data.location_id)
-    await log_activity(env, row["expedition_id"], "cargo", f"Cargo {row['code']} moved to {loc['name'] if loc else 'new location'}", user["id"])
+    loc = await q_first(env, "SELECT name,expedition_id FROM locations WHERE id=?", data.location_id)
+    if not loc or int(loc["expedition_id"]) != int(row["expedition_id"]):
+        raise HTTPException(400, "Cargo destination must belong to this expedition")
+    now = utcnow()
+    message = f"Cargo {row['code']} moved to {loc['name']}"
+    await q_write_batch(env, [
+        ("UPDATE cargo SET current_location_id=?,status=? WHERE id=?", (data.location_id, data.status, item_id)),
+        ("INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?,?)",
+         (item_id, data.location_id, data.status, data.note, user["id"], now)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (row["expedition_id"], "cargo", message, user["id"], now)),
+    ])
     await broadcast(env, row["expedition_id"], "cargo.moved", "cargo", item_id)
     return {"ok": True}
 
@@ -852,6 +762,8 @@ async def list_inventory(expedition_id: int, request: Request, user=Depends(curr
 async def add_inventory(data: InventoryIn, request: Request, user=Depends(require("commander", "logistics"))):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(env, data.expedition_id, data.location_id):
+        raise HTTPException(400, "Inventory location must belong to this expedition")
     try:
         r = await q_write(env, "INSERT INTO inventory_items(expedition_id,sku,name,location_id,quantity,min_quantity,unit,expiry_date,created_at) VALUES(?,?,?,?,?,?,?,?,?)", data.expedition_id, data.sku, data.name, data.location_id, data.quantity, data.min_quantity, data.unit, data.expiry_date, utcnow())
     except Exception:
@@ -868,6 +780,8 @@ async def edit_inventory(item_id: int, data: InventoryPatch, request: Request, u
     row = await q_first(env, "SELECT expedition_id,name FROM inventory_items WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Inventory item not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if not await valid_location_ids(env, row["expedition_id"], data.location_id):
+        raise HTTPException(400, "Inventory location must belong to this expedition")
     await patch_row(env, "inventory_items", item_id, data.model_dump(), {"name", "location_id", "min_quantity", "unit", "expiry_date"})
     await log_activity(env, row["expedition_id"], "inventory", f"Inventory item {row['name']} updated", user["id"])
     await broadcast(env, row["expedition_id"], "inventory.updated", "inventory", item_id)
@@ -882,9 +796,14 @@ async def adjust_inventory(item_id: int, data: InventoryAdjust, request: Request
     await ensure_expedition_access(env, user, row["expedition_id"])
     new_qty = float(row["quantity"] or 0) + data.delta
     if new_qty < 0: raise HTTPException(400, "Inventory cannot be negative")
-    await q_write(env, "UPDATE inventory_items SET quantity=? WHERE id=?", new_qty, item_id)
-    await q_write(env, "INSERT INTO inventory_events(inventory_id,delta,reason,user_id,created_at) VALUES(?,?,?,?,?)", item_id, data.delta, data.reason, user["id"], utcnow())
-    await log_activity(env, row["expedition_id"], "inventory", f"{row['name']} adjusted by {data.delta:g}: {data.reason}", user["id"])
+    now = utcnow()
+    await q_write_batch(env, [
+        ("UPDATE inventory_items SET quantity=? WHERE id=?", (new_qty, item_id)),
+        ("INSERT INTO inventory_events(inventory_id,delta,reason,user_id,created_at) VALUES(?,?,?,?,?)",
+         (item_id, data.delta, data.reason, user["id"], now)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (row["expedition_id"], "inventory", f"{row['name']} adjusted by {data.delta:g}: {data.reason}", user["id"], now)),
+    ])
     await broadcast(env, row["expedition_id"], "inventory.adjusted", "inventory", item_id, {"quantity": new_qty})
     return {"ok": True, "quantity": new_qty}
 
@@ -903,6 +822,8 @@ async def list_vehicles(expedition_id: int, request: Request, user=Depends(curre
 async def add_vehicle(data: VehicleIn, request: Request, user=Depends(require("commander", "logistics"))):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(env, data.expedition_id, data.location_id):
+        raise HTTPException(400, "Vehicle location must belong to this expedition")
     try:
         r = await q_write(env, "INSERT INTO vehicles(expedition_id,code,name,type,location_id,status,fuel_percent,range_km,created_at) VALUES(?,?,?,?,?,?,?,?,?)", data.expedition_id, data.code, data.name, data.type, data.location_id, data.status, data.fuel_percent, data.range_km, utcnow())
     except Exception:
@@ -919,6 +840,8 @@ async def edit_vehicle(item_id: int, data: VehiclePatch, request: Request, user=
     row = await q_first(env, "SELECT expedition_id,code FROM vehicles WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Vehicle not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if not await valid_location_ids(env, row["expedition_id"], data.location_id):
+        raise HTTPException(400, "Vehicle location must belong to this expedition")
     await patch_row(env, "vehicles", item_id, data.model_dump(), {"name", "type", "location_id", "status", "fuel_percent", "range_km"})
     await log_activity(env, row["expedition_id"], "vehicle", f"Vehicle {row['code']} updated", user["id"])
     await broadcast(env, row["expedition_id"], "vehicle.updated", "vehicle", item_id)
@@ -936,6 +859,10 @@ async def list_assets(expedition_id: int, request: Request, user=Depends(current
 async def add_asset(data: AssetIn, request: Request, user=Depends(require("commander", "logistics"))):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(env, data.expedition_id, data.location_id):
+        raise HTTPException(400, "Asset location must belong to this expedition")
+    if not await valid_personnel_ids(env, data.expedition_id, data.assigned_to_personnel_id):
+        raise HTTPException(400, "Assigned personnel must belong to this expedition")
     try:
         r = await q_write(env, "INSERT INTO assets(expedition_id,code,name,category,location_id,status,serial_number,assigned_to_personnel_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)", data.expedition_id, data.code, data.name, data.category, data.location_id, data.status, data.serial_number, data.assigned_to_personnel_id, utcnow())
     except Exception:
@@ -952,6 +879,10 @@ async def edit_asset(item_id: int, data: AssetPatch, request: Request, user=Depe
     row = await q_first(env, "SELECT expedition_id,code FROM assets WHERE id=?", item_id)
     if not row: raise HTTPException(404, "Asset not found")
     await ensure_expedition_access(env, user, row["expedition_id"])
+    if not await valid_location_ids(env, row["expedition_id"], data.location_id):
+        raise HTTPException(400, "Asset location must belong to this expedition")
+    if not await valid_personnel_ids(env, row["expedition_id"], data.assigned_to_personnel_id):
+        raise HTTPException(400, "Assigned personnel must belong to this expedition")
     await patch_row(env, "assets", item_id, data.model_dump(), {"name", "category", "location_id", "status", "serial_number", "assigned_to_personnel_id"})
     await log_activity(env, row["expedition_id"], "asset", f"Asset {row['code']} updated", user["id"])
     await broadcast(env, row["expedition_id"], "asset.updated", "asset", item_id)
@@ -973,12 +904,20 @@ async def list_incidents(expedition_id: int, request: Request, user=Depends(curr
 async def add_incident(data: IncidentIn, request: Request, user=Depends(current_user)):
     env = request.scope["env"]
     await ensure_expedition_access(env, user, data.expedition_id)
+    if not await valid_location_ids(env, data.expedition_id, data.location_id):
+        raise HTTPException(400, "Incident location must belong to this expedition")
     seq = int(await q_value(env, "SELECT COUNT(*) c FROM incidents WHERE expedition_id=?", data.expedition_id) or 0) + 1
     code = f"INC-{seq:03d}"
-    r = await q_write(env, "INSERT INTO incidents(expedition_id,code,title,type,severity,location_id,status,description,affected_count,created_by,created_at) VALUES(?,?,?,?,?,?,'Active',?,?,?,?)", data.expedition_id, code, data.title, data.type, data.severity, data.location_id, data.description, data.affected_count, user["id"], utcnow())
-    iid = last_row_id(r)
-    await q_write(env, "INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)", iid, "SOS", "Incident reported", user["id"], utcnow())
-    await log_activity(env, data.expedition_id, "incident", f"{code} triggered at incident location", user["id"])
+    now = utcnow()
+    results = await q_write_batch(env, [
+        ("INSERT INTO incidents(expedition_id,code,title,type,severity,location_id,status,description,affected_count,created_by,created_at) VALUES(?,?,?,?,?,?,'Active',?,?,?,?)",
+         (data.expedition_id, code, data.title, data.type, data.severity, data.location_id, data.description, data.affected_count, user["id"], now)),
+        ("INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) SELECT id,?,?,?,? FROM incidents WHERE expedition_id=? AND code=?",
+         ("SOS", "Incident reported", user["id"], now, data.expedition_id, code)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (data.expedition_id, "incident", f"{code} triggered at incident location", user["id"], now)),
+    ])
+    iid = last_row_id(results[0])
     await broadcast(env, data.expedition_id, "incident.created", "incident", iid, {"code": code, "severity": data.severity})
     return {"id": iid, "code": code}
 
@@ -1017,10 +956,15 @@ async def dispatch_incident(item_id: int, request: Request, user=Depends(require
         if d is not None and (best is None or d < best[0]): best = (d, v)
     if not best: raise HTTPException(400, "No operational vehicle with valid coordinates available")
     d, v = best
-    await q_write(env, "UPDATE incidents SET status='Response Dispatched',assigned_vehicle_id=? WHERE id=?", v["id"], item_id)
     note = f"Response vehicle {v['code']} dispatched; estimated straight-line distance {d:.1f} km"
-    await q_write(env, "INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)", item_id, "Dispatch", note, user["id"], utcnow())
-    await log_activity(env, inc["expedition_id"], "incident", f"{inc['code']}: {note}", user["id"])
+    now = utcnow()
+    await q_write_batch(env, [
+        ("UPDATE incidents SET status='Response Dispatched',assigned_vehicle_id=? WHERE id=?", (v["id"], item_id)),
+        ("INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)",
+         (item_id, "Dispatch", note, user["id"], now)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (inc["expedition_id"], "incident", f"{inc['code']}: {note}", user["id"], now)),
+    ])
     await broadcast(env, inc["expedition_id"], "incident.dispatched", "incident", item_id, {"vehicle_code": v["code"], "distance_km": round(d, 1)})
     return {"ok": True, "vehicle_code": v["code"], "distance_km": round(d, 1)}
 
@@ -1031,9 +975,14 @@ async def resolve_incident(item_id: int, request: Request, user=Depends(require(
     inc = await q_first(env, "SELECT expedition_id,code FROM incidents WHERE id=?", item_id)
     if not inc: raise HTTPException(404, "Incident not found")
     await ensure_expedition_access(env, user, inc["expedition_id"])
-    await q_write(env, "UPDATE incidents SET status='Resolved',resolved_at=? WHERE id=?", utcnow(), item_id)
-    await q_write(env, "INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)", item_id, "Resolved", "Incident resolved; personnel accountability confirmed", user["id"], utcnow())
-    await log_activity(env, inc["expedition_id"], "incident", f"{inc['code']} resolved", user["id"])
+    now = utcnow()
+    await q_write_batch(env, [
+        ("UPDATE incidents SET status='Resolved',resolved_at=? WHERE id=?", (now, item_id)),
+        ("INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)",
+         (item_id, "Resolved", "Incident resolved; personnel accountability confirmed", user["id"], now)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (inc["expedition_id"], "incident", f"{inc['code']} resolved", user["id"], now)),
+    ])
     await broadcast(env, inc["expedition_id"], "incident.resolved", "incident", item_id)
     return {"ok": True}
 
@@ -1044,156 +993,15 @@ async def add_incident_event(item_id: int, data: IncidentEventIn, request: Reque
     inc = await q_first(env, "SELECT expedition_id,code FROM incidents WHERE id=?", item_id)
     if not inc: raise HTTPException(404, "Incident not found")
     await ensure_expedition_access(env, user, inc["expedition_id"])
-    await q_write(env, "INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)", item_id, data.event_type, data.note, user["id"], utcnow())
-    await log_activity(env, inc["expedition_id"], "incident", f"{inc['code']}: {data.note}", user["id"])
+    now = utcnow()
+    await q_write_batch(env, [
+        ("INSERT INTO incident_events(incident_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?)",
+         (item_id, data.event_type, data.note, user["id"], now)),
+        ("INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)",
+         (inc["expedition_id"], "incident", f"{inc['code']}: {data.note}", user["id"], now)),
+    ])
     await broadcast(env, inc["expedition_id"], "incident.event", "incident", item_id, {"event_type": data.event_type})
     return {"ok": True}
-
-
-# ----------------------------- Public Antarctic data ----------------------
-
-async def source_status(env, name: str, url: str, status: str, details: str = ""):
-    await q_write(env, """INSERT INTO data_sources(name,source_url,last_sync,last_status,details) VALUES(?,?,?,?,?)
-      ON CONFLICT(name) DO UPDATE SET source_url=excluded.source_url,last_sync=excluded.last_sync,last_status=excluded.last_status,details=excluded.details""",
-      name, url, utcnow(), status, details)
-
-
-async def sync_comnap(env, offset: int = 0, limit: int = 35) -> dict:
-    url = env_value(env, "COMNAP_FACILITIES_URL", DEFAULT_COMNAP_URL)
-    try:
-        resp = await cf_fetch(url)
-        if int(resp.status) >= 400:
-            raise RuntimeError(f"HTTP {resp.status}")
-        text = await resp.text()
-        reader = csv.DictReader(io.StringIO(str(text).lstrip("\ufeff")))
-        all_rows = list(reader)
-        offset = max(0, int(offset))
-        limit = max(1, min(int(limit), 35))
-        batch_rows = all_rows[offset:offset + limit]
-        synced = skipped = 0
-        now = utcnow()
-        for raw in batch_rows:
-            name = pick(raw, "Facility Name", "Facility", "Station Name", "Name")
-            if not name:
-                skipped += 1
-                continue
-            country = pick(raw, "Country", "Party", "Nation", "National Antarctic Program Country", "NAP Country")
-            programme = pick(raw, "National Antarctic Program", "National Antarctic Programme", "Operator", "Programme", "Program")
-            facility_type = pick(raw, "Facility Type", "Type") or "Facility"
-            seasonality = pick(raw, "Operational Period", "Seasonality", "Operation", "Operational Status")
-            status = pick(raw, "Status", "Facility Status")
-            lat = parse_coord(pick(raw, "Latitude", "Latitude DD", "Lat", "Y"))
-            lon = parse_coord(pick(raw, "Longitude", "Longitude DD", "Lon", "Lng", "Long", "X"))
-            external = pick(raw, "Facility ID", "ID", "Identifier", "Code")
-            basis = f"{external}|{name}|{country}|{lat}|{lon}"
-            source_key = "comnap:" + hashlib.sha256(basis.encode()).hexdigest()[:24]
-            await q_write(env, """INSERT INTO public_facilities(source_key,name,country,programme,facility_type,seasonality,status,latitude,longitude,source,source_url,source_updated_at,raw_json,synced_at)
-              VALUES(?,?,?,?,?,?,?,?,?,'COMNAP',?,'November 2024',?,?)
-              ON CONFLICT(source_key) DO UPDATE SET name=excluded.name,country=excluded.country,programme=excluded.programme,
-              facility_type=excluded.facility_type,seasonality=excluded.seasonality,status=excluded.status,latitude=excluded.latitude,
-              longitude=excluded.longitude,raw_json=excluded.raw_json,synced_at=excluded.synced_at""",
-              source_key, name, country, programme, facility_type, seasonality, status, lat, lon, url, json.dumps(raw, ensure_ascii=False), now)
-            synced += 1
-        next_offset = offset + len(batch_rows)
-        has_more = next_offset < len(all_rows)
-        await source_status(env, "COMNAP Facilities", url, "OK", f"{next_offset}/{len(all_rows)} rows processed; {skipped} skipped in latest batch")
-        return {"ok": True, "synced": synced, "skipped": skipped, "processed": next_offset, "total_rows": len(all_rows), "next_offset": next_offset, "has_more": has_more, "source": "COMNAP", "source_url": url}
-    except Exception as exc:
-        await source_status(env, "COMNAP Facilities", url, "ERROR", str(exc)[:500])
-        raise HTTPException(502, f"COMNAP sync failed: {exc}")
-
-
-@app.get("/api/data-sources")
-async def data_sources(request: Request, user=Depends(current_user)):
-    env = request.scope["env"]
-    rows = await q_all(env, "SELECT * FROM data_sources ORDER BY name")
-    facility_count = int(await q_value(env, "SELECT COUNT(*) c FROM public_facilities") or 0)
-    live_workers = int(await q_value(env, "SELECT COUNT(*) c FROM personnel WHERE source LIKE 'feed:%'") or 0)
-    return {"sources": rows, "facility_count": facility_count, "external_worker_count": live_workers, "worker_feed_configured": bool(env_value(env, "OPERATIONS_FEED_URL"))}
-
-
-@app.post("/api/public/facilities/sync")
-async def sync_public_facilities(request: Request, offset: int = 0, limit: int = 35, user=Depends(require("commander", "logistics"))):
-    return await sync_comnap(request.scope["env"], offset, limit)
-
-
-@app.get("/api/public/facilities")
-async def list_public_facilities(request: Request, country: Optional[str] = None, q: Optional[str] = None, limit: int = 500, offset: int = 0, user=Depends(current_user)):
-    env = request.scope["env"]
-    where, params = [], []
-    if country:
-        where.append("lower(f.country)=lower(?)"); params.append(country)
-    if q:
-        where.append("(lower(f.name) LIKE lower(?) OR lower(f.country) LIKE lower(?) OR lower(f.programme) LIKE lower(?))")
-        like = f"%{q}%"; params.extend([like, like, like])
-    clause = " WHERE " + " AND ".join(where) if where else ""
-    limit = max(1, min(limit, 2000)); offset = max(0, offset)
-    total = int(await q_value(env, f"SELECT COUNT(*) c FROM public_facilities f{clause}", *params) or 0)
-    rows = await q_all(env, f"""SELECT f.*,w.temperature_c,w.wind_speed_kph,w.wind_gusts_kph,w.observed_at weather_observed_at,w.fetched_at weather_fetched_at
-      FROM public_facilities f LEFT JOIN facility_weather w ON w.facility_id=f.id{clause}
-      ORDER BY f.country,f.name LIMIT ? OFFSET ?""", *(params + [limit, offset]))
-    countries = await q_all(env, "SELECT country,COUNT(*) count FROM public_facilities WHERE country<>'' GROUP BY country ORDER BY country")
-    return {"items": rows, "total": total, "countries": countries, "source": "COMNAP", "source_url": env_value(env, "COMNAP_FACILITIES_URL", DEFAULT_COMNAP_URL)}
-
-
-@app.get("/api/public/facilities/{facility_id}/weather")
-async def public_facility_weather(facility_id: int, request: Request, force: bool = False, user=Depends(current_user)):
-    env = request.scope["env"]
-    facility = await q_first(env, "SELECT * FROM public_facilities WHERE id=?", facility_id)
-    if not facility: raise HTTPException(404, "Facility not found")
-    if facility.get("latitude") is None or facility.get("longitude") is None: raise HTTPException(400, "Facility has no usable coordinates")
-    cached = await q_first(env, "SELECT * FROM facility_weather WHERE facility_id=?", facility_id)
-    if cached and not force:
-        try:
-            age = (datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
-            if age < 600: return {"facility": facility, "weather": cached, "cached": True}
-        except Exception: pass
-    params = urllib.parse.urlencode({
-        "latitude": facility["latitude"], "longitude": facility["longitude"],
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,snowfall,weather_code,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
-        "timezone": "UTC", "wind_speed_unit": "kmh", "temperature_unit": "celsius"
-    })
-    url = env_value(env, "OPEN_METEO_URL", DEFAULT_OPEN_METEO_URL) + "?" + params
-    try:
-        resp = await cf_fetch(url)
-        if int(resp.status) >= 400: raise RuntimeError(f"HTTP {resp.status}")
-        payload = to_py(await resp.json()) or {}
-        current = payload.get("current") or {}
-        weather = {
-            "facility_id": facility_id, "temperature_c": current.get("temperature_2m"),
-            "apparent_temperature_c": current.get("apparent_temperature"), "relative_humidity": current.get("relative_humidity_2m"),
-            "wind_speed_kph": current.get("wind_speed_10m"), "wind_direction_deg": current.get("wind_direction_10m"),
-            "wind_gusts_kph": current.get("wind_gusts_10m"), "surface_pressure_hpa": current.get("surface_pressure"),
-            "snowfall_mm": current.get("snowfall"), "weather_code": current.get("weather_code"),
-            "observed_at": current.get("time"), "source": "Open-Meteo model current conditions", "fetched_at": utcnow(),
-        }
-        await q_write(env, """INSERT INTO facility_weather(facility_id,temperature_c,apparent_temperature_c,relative_humidity,wind_speed_kph,wind_direction_deg,wind_gusts_kph,surface_pressure_hpa,snowfall_mm,weather_code,observed_at,source,fetched_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(facility_id) DO UPDATE SET temperature_c=excluded.temperature_c,
-          apparent_temperature_c=excluded.apparent_temperature_c,relative_humidity=excluded.relative_humidity,wind_speed_kph=excluded.wind_speed_kph,
-          wind_direction_deg=excluded.wind_direction_deg,wind_gusts_kph=excluded.wind_gusts_kph,surface_pressure_hpa=excluded.surface_pressure_hpa,
-          snowfall_mm=excluded.snowfall_mm,weather_code=excluded.weather_code,observed_at=excluded.observed_at,source=excluded.source,fetched_at=excluded.fetched_at""",
-          weather["facility_id"], weather["temperature_c"], weather["apparent_temperature_c"], weather["relative_humidity"], weather["wind_speed_kph"], weather["wind_direction_deg"], weather["wind_gusts_kph"], weather["surface_pressure_hpa"], weather["snowfall_mm"], weather["weather_code"], weather["observed_at"], weather["source"], weather["fetched_at"])
-        return {"facility": facility, "weather": weather, "cached": False}
-    except Exception as exc:
-        raise HTTPException(502, f"Weather refresh failed: {exc}")
-
-
-@app.post("/api/public/facilities/{facility_id}/import")
-async def import_public_facility(facility_id: int, expedition_id: int, request: Request, user=Depends(require("commander", "logistics"))):
-    env = request.scope["env"]
-    await ensure_expedition_access(env, user, expedition_id)
-    f = await q_first(env, "SELECT * FROM public_facilities WHERE id=?", facility_id)
-    if not f: raise HTTPException(404, "Facility not found")
-    existing = await q_first(env, "SELECT id FROM locations WHERE expedition_id=? AND name=?", expedition_id, f["name"])
-    if existing:
-        await q_write(env, "UPDATE locations SET type=?,latitude=?,longitude=?,source='COMNAP' WHERE id=?", f.get("facility_type") or "Station", f.get("latitude"), f.get("longitude"), existing["id"])
-        lid, created = existing["id"], False
-    else:
-        r = await q_write(env, "INSERT INTO locations(expedition_id,name,type,latitude,longitude,source,external_id) VALUES(?,?,?,?,?,'COMNAP',?)", expedition_id, f["name"], f.get("facility_type") or "Station", f.get("latitude"), f.get("longitude"), str(facility_id))
-        lid, created = last_row_id(r), True
-    await log_activity(env, expedition_id, "location", f"Public facility {f['name']} ({f.get('country') or 'Antarctica'}) {'imported' if created else 'updated'} from COMNAP reference data", user["id"])
-    await broadcast(env, expedition_id, "location.public_imported", "location", lid, {"facility_id": facility_id, "name": f["name"]})
-    return {"ok": True, "location_id": lid, "created": created}
 
 
 # ----------------------------- Authorized worker feed ---------------------
@@ -1294,7 +1102,6 @@ async def activity(expedition_id: int, request: Request, limit: int = 100, user=
 @app.get("/api/backup")
 async def backup(request: Request, user=Depends(require("commander"))):
     env = request.scope["env"]
-    tables = ["organizations", "users", "expeditions", "locations", "personnel", "cargo", "cargo_events", "inventory_items", "inventory_events", "vehicles", "assets", "incidents", "incident_events", "activity", "telemetry_positions", "public_facilities", "facility_weather", "data_sources"]
     payload = {"exported_at": utcnow(), "version": APP_VERSION}
     org_id = user["organization_id"]
     # Global reference tables are exported; operational tables are restricted by tenant.
@@ -1302,30 +1109,40 @@ async def backup(request: Request, user=Depends(require("commander"))):
     payload["users"] = await q_all(env, "SELECT id,organization_id,email,name,role,active,created_at FROM users WHERE organization_id=?", org_id)
     exp_ids = [x["id"] for x in await q_all(env, "SELECT id FROM expeditions WHERE organization_id=?", org_id)]
     payload["expeditions"] = await q_all(env, "SELECT * FROM expeditions WHERE organization_id=?", org_id)
-    for table in ["locations", "personnel", "cargo", "inventory_items", "vehicles", "assets", "incidents", "activity", "telemetry_positions"]:
+    for table in ["locations", "personnel", "cargo", "inventory_items", "vehicles", "assets", "incidents", "activity", "telemetry_positions", "mission_tasks", "planned_routes", "geofences", "ops_alerts", "science_records", "comms_checkins", "readiness_items", "shift_handovers", "audit_events"]:
         if exp_ids:
             placeholders = ",".join("?" for _ in exp_ids)
             payload[table] = await q_all(env, f"SELECT * FROM {table} WHERE expedition_id IN ({placeholders})", *exp_ids)
         else:
             payload[table] = []
+    if exp_ids:
+        placeholders = ",".join("?" for _ in exp_ids)
+        payload["cargo_events"] = await q_all(env, f"SELECT e.* FROM cargo_events e JOIN cargo c ON c.id=e.cargo_id WHERE c.expedition_id IN ({placeholders})", *exp_ids)
+        payload["inventory_events"] = await q_all(env, f"SELECT e.* FROM inventory_events e JOIN inventory_items i ON i.id=e.inventory_id WHERE i.expedition_id IN ({placeholders})", *exp_ids)
+        payload["incident_events"] = await q_all(env, f"SELECT e.* FROM incident_events e JOIN incidents i ON i.id=e.incident_id WHERE i.expedition_id IN ({placeholders})", *exp_ids)
+        payload["incident_actions"] = await q_all(env, f"SELECT a.* FROM incident_actions a JOIN incidents i ON i.id=a.incident_id WHERE i.expedition_id IN ({placeholders})", *exp_ids)
+    else:
+        payload["cargo_events"] = []
+        payload["inventory_events"] = []
+        payload["incident_events"] = []
+        payload["incident_actions"] = []
     payload["public_facilities"] = await q_all(env, "SELECT * FROM public_facilities")
     payload["facility_weather"] = await q_all(env, "SELECT * FROM facility_weather")
     payload["data_sources"] = await q_all(env, "SELECT * FROM data_sources")
+    payload["research_station_reference"] = await q_all(env, "SELECT * FROM research_station_reference")
+    payload["arctic_research_stations"] = await q_all(env, "SELECT * FROM arctic_research_stations")
     raw = json.dumps(payload, separators=(",", ":"), default=str)
     try:
-        key = f"backups/org-{org_id}/polarops-{datetime.now(timezone.utc).date()}.json"
-        await env.BACKUPS.put(key, raw)
-        payload["r2_backup_key"] = key
-    except Exception:
-        pass
+        backups = getattr(env, "BACKUPS", None)
+        if backups is None:
+            payload["r2_backup"] = {"status": "not_configured"}
+        else:
+            key = f"backups/org-{org_id}/polarops-{datetime.now(timezone.utc).date()}.json"
+            await backups.put(key, raw)
+            payload["r2_backup"] = {"status": "stored", "key": key}
+    except Exception as exc:
+        payload["r2_backup"] = {"status": "error", "detail": type(exc).__name__}
     return payload
-
-
-@app.get("/api/health")
-async def health(request: Request):
-    env = request.scope["env"]
-    count = int(await q_value(env, "SELECT COUNT(*) c FROM public_facilities") or 0)
-    return {"ok": True, "time": utcnow(), "database": "Cloudflare D1", "realtime": True, "durable_objects": True, "public_facilities": count, "worker_feed_configured": bool(env_value(env, "OPERATIONS_FEED_URL")), "version": APP_VERSION}
 
 
 # ----------------------------- Static frontend ----------------------------
@@ -1351,88 +1168,41 @@ async def frontend(path: str, request: Request):
     return FastAPIResponse(content=bytes(body), status_code=int(resp.status), headers=dict(resp.headers))
 
 
-# ----------------------------- Durable Object -----------------------------
-
-class ExpeditionRoom(DurableObject):
-    """One hibernatable WebSocket room per expedition."""
-
-    def __init__(self, ctx, env):
-        super().__init__(ctx, env)
-        self.sessions = {}
-        try:
-            for ws in self.ctx.getWebSockets():
-                attachment = ws.deserializeAttachment()
-                self.sessions[str(attachment or "unauth")] = ws
-        except Exception:
-            pass
-
-    async def fetch(self, request):
-        upgrade = request.headers.get("Upgrade")
-        if not upgrade or str(upgrade).lower() != "websocket":
-            return Response("Expected WebSocket upgrade", status=426)
-        client, server = WebSocketPair.new().object_values()
-        self.ctx.acceptWebSocket(server)
-        sid = "unauth:" + str(uuid.uuid4())
-        server.serializeAttachment(sid)
-        self.sessions[sid] = server
-        return Response(None, status=101, web_socket=client)
-
-    async def webSocketMessage(self, ws, message):
-        try:
-            data = json.loads(str(message))
-        except Exception:
-            return
-        attachment = str(ws.deserializeAttachment() or "")
-        if data.get("type") == "auth":
-            try:
-                payload = decode_token(str(data.get("token") or ""), env_value(self.env, "AUTH_SECRET", "dev-only-change-me"))
-                new_attachment = f"auth:{payload['uid']}:{payload['oid']}:{payload['role']}"
-                self.sessions.pop(attachment, None)
-                ws.serializeAttachment(new_attachment)
-                self.sessions[new_attachment] = ws
-                ws.send(json.dumps({"type": "auth.ok", "expedition_id": int(self.ctx.id.name or 0), "user_id": payload["uid"], "server_time": utcnow()}))
-            except Exception:
-                ws.send(json.dumps({"type": "auth.error", "detail": "Invalid or expired session"}))
-                ws.close(4401, "Unauthorized")
-            return
-        if not attachment.startswith("auth:"):
-            ws.send(json.dumps({"type": "auth.error", "detail": "Authentication required"}))
-            return
-        if data.get("type") == "ping":
-            ws.send(json.dumps({"type": "pong", "server_time": utcnow()}))
-
-    async def webSocketClose(self, ws, code, reason, wasClean):
-        attachment = str(ws.deserializeAttachment() or "")
-        self.sessions.pop(attachment, None)
-        try:
-            ws.close(code, reason)
-        except Exception:
-            pass
-
-    async def broadcast_json(self, payload: str):
-        # Use ctx.getWebSockets() so hibernated/reconstructed objects still reach all clients.
-        sent = 0
-        for ws in self.ctx.getWebSockets():
-            try:
-                attachment = str(ws.deserializeAttachment() or "")
-                if attachment.startswith("auth:"):
-                    ws.send(payload)
-                    sent += 1
-            except Exception:
-                pass
-        return sent
-
-
 # ----------------------------- Worker entrypoint ---------------------------
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        path = urllib.parse.urlparse(request.url).path
+        parsed = urllib.parse.urlparse(request.url)
+        path = parsed.path
         if path.startswith("/ws/expeditions/"):
             parts = [p for p in path.split("/") if p]
             if len(parts) != 3:
                 return Response("Invalid WebSocket path", status=404)
-            expedition_id = parts[-1]
-            stub = self.env.EXPEDITION_ROOM.getByName(expedition_id)
+            try:
+                expedition_id = int(parts[-1])
+            except Exception:
+                return Response("Invalid expedition", status=404)
+
+            query = urllib.parse.parse_qs(parsed.query)
+            ticket = (query.get("ticket") or [""])[0]
+            try:
+                payload = decode_ws_ticket(
+                    ticket,
+                    required_env_value(self.env, "AUTH_SECRET"),
+                )
+            except Exception:
+                return Response("Unauthorized", status=401)
+
+            if int(payload.get("eid", -1)) != expedition_id:
+                return Response("Unauthorized", status=403)
+
+            if not await realtime_ticket_allows_expedition(
+                self.env,
+                expedition_id,
+                payload,
+            ):
+                return Response("Unauthorized", status=403)
+
+            stub = self.env.EXPEDITION_ROOM.getByName(str(expedition_id))
             return await stub.fetch(request)
         return await asgi.fetch(app, request, self.env)
