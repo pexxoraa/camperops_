@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { createDatabase } from '../config/database.js';
 import { decodeToken, makeRealtimeTicket, makeToken, verifyPassword } from '../security.js';
 
-test('demo password hashes remain compatible with Node PBKDF2', () => {
-  const db = createDatabase(':memory:');
+test('demo password hashes remain compatible with Node PBKDF2', async () => {
+  const db = await createDatabase(':memory:');
   const commander = db.prepare('SELECT * FROM users WHERE email=?').get('commander@polarops.local');
   const logistics = db.prepare('SELECT * FROM users WHERE email=?').get('logistics@polarops.local');
   const field = db.prepare('SELECT * FROM users WHERE email=?').get('field@polarops.local');

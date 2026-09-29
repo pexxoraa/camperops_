@@ -295,10 +295,13 @@ button:disabled {
 /* Polar map markers, legend and fullscreen */
 .polar-map {
   position: relative;
+  height: min(var(--polar-map-height, 430px), 52vh);
+  min-height: 300px;
   overflow: hidden;
   border: 1px solid #c7d8e5;
   border-radius: 8px;
   background: #dbe8f0;
+  contain: layout paint;
 }
 
 .polar-map .leaflet-host {
@@ -332,11 +335,18 @@ button:disabled {
   box-shadow: 0 24px 70px rgba(12, 47, 74, 0.28);
 }
 
-.map-fullscreen-button {
+.map-action-bar {
   position: absolute;
   top: 10px;
   right: 10px;
   z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.map-fullscreen-button {
+  position: static;
   border: 1px solid #c8d9e6;
   border-radius: 6px;
   padding: 7px 10px;
@@ -347,6 +357,31 @@ button:disabled {
   box-shadow: 0 4px 14px rgba(25, 61, 88, 0.14);
 }
 
+.map-basemap-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #c8d9e6;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 4px 14px rgba(25, 61, 88, 0.14);
+}
+
+.map-basemap-switch button {
+  border: 0;
+  border-radius: 5px;
+  padding: 5px 8px;
+  background: transparent;
+  color: #516c80;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.map-basemap-switch button.active {
+  background: #0b78e3;
+  color: #fff;
+}
+
 .polar-map-legend {
   position: absolute;
   top: 10px;
@@ -355,13 +390,13 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 10px;
-  max-width: calc(100% - 190px);
+  max-width: calc(100% - 310px);
   padding: 7px 9px;
   border: 1px solid #cadbe7;
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.94);
   color: #355269;
-  font-size: 10px;
+  font-size: 12px;
   box-shadow: 0 5px 18px rgba(25, 61, 88, 0.14);
   backdrop-filter: blur(5px);
 }
@@ -431,25 +466,54 @@ button:disabled {
 }
 
 @media (max-width: 760px) {
+  .map-action-bar {
+    left: 10px;
+    right: 10px;
+    justify-content: flex-end;
+  }
+
   .polar-map-legend {
     left: 10px;
-    top: 48px;
+    top: 52px;
     max-width: calc(100% - 20px);
+    font-size: 9px;
+  }
+
+  .map-basemap-switch button,
+  .map-fullscreen-button {
     font-size: 9px;
   }
 }
 
 .polar-map-block {
-  margin-bottom: 4px;
+  margin-bottom: 10px;
 }
 
-.polar-map-source {
-  padding: 3px 2px 0;
-  color: #8aa0b1;
+.polar-map-attribution {
+  position: absolute;
+  right: 6px;
+  bottom: 4px;
+  z-index: 650;
+  padding: 2px 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(55, 83, 104, 0.62);
   font-size: 7px;
-  line-height: 1.2;
-  text-align: right;
-  user-select: none;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.polar-map-attribution:hover {
+  color: #355269;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+@media (max-height: 700px), (max-width: 760px) {
+  .polar-map {
+    height: min(var(--polar-map-height, 430px), 46vh);
+    min-height: 260px;
+  }
 }
 
 /* Cargo QR scanning and custody history */
@@ -535,5 +599,158 @@ button:disabled {
 
   .cargo-scan-manual .button {
     width: 100%;
+  }
+}
+
+/* Routes command workspace */
+.routes-workspace {
+  display: grid;
+  grid-template-columns: minmax(480px, 0.9fr) minmax(420px, 1.1fr);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 14px;
+}
+
+.routes-map-panel,
+.routes-control-stack,
+.routes-results-grid,
+.routes-data-panel {
+  min-width: 0;
+}
+
+.routes-map-panel {
+  align-self: start;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.routes-map-heading {
+  margin-bottom: 9px;
+}
+
+.routes-map-heading > div {
+  min-width: 0;
+}
+
+.routes-map-heading span {
+  display: block;
+  margin-top: 3px;
+}
+
+.routes-control-stack {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.routes-control-stack .route-form {
+  position: static;
+  top: auto;
+  margin: 0;
+}
+
+.routes-control-stack .route-form .panel-title {
+  align-items: flex-start;
+}
+
+.routes-control-stack .route-form .panel-title span {
+  max-width: 260px;
+  text-align: right;
+  line-height: 1.35;
+}
+
+.routes-results-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.routes-data-panel {
+  overflow: hidden;
+}
+
+.polar-map-block--square {
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.polar-map-block--square .polar-map:not(.fullscreen) {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 1 / 1;
+}
+
+.polar-map-block--square .polar-map.fullscreen {
+  aspect-ratio: auto;
+}
+
+.polar-map-block--footer-legend .polar-map-legend--footer {
+  position: static;
+  width: 100%;
+  max-width: none;
+  margin-top: 8px;
+  padding: 7px 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  font-size: 10px;
+  gap: 5px 10px;
+}
+
+@media (max-width: 1180px) {
+  .routes-workspace,
+  .routes-results-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .routes-map-panel {
+    max-width: 760px;
+    width: 100%;
+    margin-inline: auto;
+  }
+
+  .routes-control-stack {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .routes-control-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .routes-map-panel {
+    max-width: none;
+  }
+
+  .routes-control-stack .route-form .panel-title span {
+    max-width: none;
+    text-align: left;
+  }
+
+  .polar-map-block--footer-legend .polar-map-legend--footer {
+    font-size: 9px;
+  }
+}
+
+@media (max-width: 560px) {
+  .routes-map-panel {
+    padding: 8px;
+  }
+
+  .map-action-bar {
+    top: 8px;
+    left: 44px;
+    right: 8px;
+    justify-content: flex-end;
+  }
+
+  .map-basemap-switch button,
+  .map-fullscreen-button {
+    padding: 5px 7px;
   }
 }

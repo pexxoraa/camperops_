@@ -1,6 +1,9 @@
 import { cacheGet,cacheSet,deleteQueued,enqueueMutation,listQueued,queueCount,updateQueued } from './offline.js';
 
-const API_BASE=import.meta.env.VITE_API_BASE||'/api';
+const DEFAULT_API_BASE = import.meta.env.PROD
+  ? 'https://polarops-api.pexxoraa.workers.dev/api'
+  : '/api';
+const API_BASE = import.meta.env.VITE_API_BASE || DEFAULT_API_BASE;
 const TOKEN_KEY='polarops.session';
 const normalizePath=(path)=>path.startsWith('/api/')?path.slice(4):(path==='/api'?'':path);
 

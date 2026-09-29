@@ -129,6 +129,12 @@ await page.getByRole("heading", { name: /Routes & Zones/i }).waitFor();
 await page.locator(".leaflet-container").waitFor({ timeout: 10000 });
 const routeForms = await page.locator(".route-form").count();
 if (routeForms !== 2) throw new Error("Expected route and geofence forms");
+const routeMapBox = await page
+  .locator(".routes-map-panel .polar-map")
+  .boundingBox();
+if (!routeMapBox || Math.abs(routeMapBox.width - routeMapBox.height) > 2) {
+  throw new Error("Routes map should remain square");
+}
 await page.locator(".polar-map-legend").waitFor({ timeout: 10000 });
 if (
   !(await page
@@ -152,7 +158,43 @@ await page.waitForFunction(
   null,
   { timeout: 10000 },
 );
-await page.locator(".polar-map-source").waitFor({ timeout: 10000 });
+if (await page.locator(".polar-map-source").count()) {
+  throw new Error("Legacy map source line should not render below the map");
+}
+await page.locator(".polar-map-attribution").waitFor({ timeout: 10000 });
+
+await page
+  .locator(".map-basemap-switch")
+  .getByRole("button", { name: "Satellite", exact: true })
+  .click();
+await page.waitForFunction(
+  () =>
+    [...document.querySelectorAll(".leaflet-tile")].some((tile) =>
+      String(tile.getAttribute("src") || "").includes("arcgisonline.com"),
+    ),
+  null,
+  { timeout: 10000 },
+);
+if (
+  !(await page
+    .locator(".polar-map-attribution")
+    .innerText()
+    .then((text) => text.includes("Esri")))
+) {
+  throw new Error("Satellite attribution is missing");
+}
+await page
+  .locator(".map-basemap-switch")
+  .getByRole("button", { name: "Map", exact: true })
+  .click();
+await page.waitForFunction(
+  () =>
+    [...document.querySelectorAll(".leaflet-tile")].some((tile) =>
+      String(tile.getAttribute("src") || "").includes("tile.openstreetmap.org"),
+    ),
+  null,
+  { timeout: 10000 },
+);
 
 const expeditionSelect = page.locator(".expedition-picker select");
 await expeditionSelect.selectOption({ label: "Expedition Alpha" });

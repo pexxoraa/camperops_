@@ -45,18 +45,18 @@ async function fetchWeather(base) {
 async function cachedWeather(base,force=false) {
   if(!base)return null;
   const key='env:weather:'+Number(base.latitude).toFixed(4)+':'+Number(base.longitude).toFixed(4);
-  const cached=get('SELECT * FROM external_cache WHERE cache_key=?',key);
+  const cached=await get('SELECT * FROM external_cache WHERE cache_key=?',key);
   if(!force&&cached&&Date.now()-Date.parse(cached.fetched_at)<600000){
     try{return JSON.parse(cached.payload_json);}catch{}
   }
   const payload=await fetchWeather(base);
-  run('INSERT INTO external_cache(cache_key,payload_json,fetched_at) VALUES(?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json,fetched_at=excluded.fetched_at',
+  await run('INSERT INTO external_cache(cache_key,payload_json,fetched_at) VALUES(?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json,fetched_at=excluded.fetched_at',
     key,JSON.stringify(payload),new Date().toISOString());
   return payload;
 }
 
 export async function environmentOverview(expedition,force=false) {
-  const locations=all('SELECT * FROM locations WHERE expedition_id=? ORDER BY id',expedition.id);
+  const locations=await all('SELECT * FROM locations WHERE expedition_id=? ORDER BY id',expedition.id);
   const pole=polarRegion(expedition,locations),base=primaryLocation(locations);
   const errors={};let weather=null;
   try{weather=await cachedWeather(base,force);}catch(error){errors.weather=error.message;}

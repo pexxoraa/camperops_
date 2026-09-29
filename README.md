@@ -1,20 +1,32 @@
-# PolarOps — Local Node/React Refactor
+# PolarOps
 
-This branch is the local-development conversion of PolarOps to JavaScript, Node.js, Express, React and Vite.
+PolarOps is an expedition command platform with a React/Vite frontend and a JavaScript Express API. The same backend code supports local Node.js development and Cloudflare Workers production.
 
-**No deployment is configured or performed by this refactor.** The active project is organized as a JavaScript-only `Backend/` + `Frontend/` workspace. Architecture and validation notes are kept under `Backend/utils/docs/`.
+## Architecture
 
-## Local stack
+### Local development
 
-- Backend: Node.js + Express.js
-- Database: local SQLite through Node's built-in `node:sqlite`
-- Frontend: React + JSX + Vite
-- SPA routing: `react-router-dom`
-- Maps: Leaflet + `react-leaflet`
-- Realtime: WebSocket via `ws`
-- Offline: service worker shell cache + IndexedDB read cache/mutation queue
+- Backend: Node.js + Express
+- Database: SQLite through Node's built-in `node:sqlite`
+- Realtime: `ws`
+- Frontend: React + Vite
+- Maps: Leaflet + React Leaflet
+- Offline: service-worker shell cache + IndexedDB read cache/mutation queue
 
-No production D1 connection is used by the Node backend.
+### Cloudflare production
+
+- Frontend: React/Vite static build on Cloudflare Pages
+- Backend: Express 5 on Cloudflare Workers
+- Database: Cloudflare D1
+- Realtime: Cloudflare Durable Objects + WebSocket Hibernation
+- One `ExpeditionRoom` Durable Object instance per expedition
+- Worker secrets: Wrangler secrets, not committed environment files
+
+Current deployment:
+
+- Frontend: https://polarops.pages.dev
+- API/Realtime Worker: https://polarops-api.pexxoraa.workers.dev
+- D1 database: `polarops-db`
 
 ## Project structure
 
@@ -24,12 +36,20 @@ polarops-react/
 │   ├── models/
 │   ├── routes/
 │   ├── utils/
+│   │   ├── cloudflare/
+│   │   ├── config/
+│   │   ├── db/
+│   │   ├── middleware/
+│   │   ├── services/
+│   │   └── tests/
 │   ├── index.js
-│   ├── package.json
-│   └── package-lock.json
+│   ├── worker.js
+│   ├── wrangler.jsonc
+│   └── package.json
 ├── Frontend/
 │   ├── public/
 │   ├── src/
+│   ├── .env.production
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
@@ -38,7 +58,7 @@ polarops-react/
 └── README.md
 ```
 
-## Run locally
+## Run locally with Node + SQLite
 
 Backend:
 
@@ -61,15 +81,77 @@ npm run dev
 
 Frontend: http://127.0.0.1:5173
 
-The Vite development server proxies `/api` and `/ws` to the local Express backend.
+Vite proxies `/api` and `/ws` to the local Node backend.
 
-## Local demo accounts
+## Run locally with Cloudflare D1 + Durable Objects
 
-- Commander: `commander@polarops.local` / `PolarOps123!`
-- Logistics: `logistics@polarops.local` / `Logistics123!`
-- Field: `field@polarops.local` / `Field123!`
+Create `Backend/.dev.vars` with a local `AUTH_SECRET`, then:
 
-These are synthetic local-development credentials only.
+```bash
+cd Backend
+npm run d1:migrate:local
+npm run dev:worker
+```
+
+The Worker starts on http://127.0.0.1:8787 by default.
+
+Test the Worker stack:
+
+```bash
+npm run test:worker
+```
+
+To run the frontend against the local Worker:
+
+```bash
+cd Frontend
+VITE_API_BASE=http://127.0.0.1:8787/api \
+VITE_REALTIME_BASE=http://127.0.0.1:8787 \
+npm run dev
+```
+
+## Cloudflare deployment
+
+Backend configuration is in `Backend/wrangler.jsonc`. D1 migrations live in `Backend/utils/db/migrations/`.
+
+Apply D1 migrations:
+
+```bash
+cd Backend
+npm run d1:migrate:remote
+```
+
+Deploy the Worker. Store `AUTH_SECRET` as a Worker secret; do not put it in `wrangler.jsonc`.
+
+```bash
+npx wrangler deploy --secrets-file .dev.vars
+```
+
+Build the frontend. Production defaults point to the deployed Worker, while `VITE_API_BASE` and `VITE_REALTIME_BASE` can override them for another Cloudflare environment:
+
+```bash
+cd Frontend
+npm run build
+```
+
+Deploy Pages:
+
+```bash
+cd ../Backend
+npx wrangler pages deploy ../Frontend/dist \
+  --project-name polarops \
+  --branch main
+```
+
+## Demo accounts
+
+The current deployment is a synthetic demo environment and includes seeded demo users:
+
+- Commander: `commander@polarops.local`
+- Logistics: `logistics@polarops.local`
+- Field: `field@polarops.local`
+
+Local seed passwords are defined by the demo migrations. Before using PolarOps for non-demo operational data, remove or rotate seeded demo credentials and configure appropriate access controls.
 
 ## Validation
 
@@ -79,6 +161,7 @@ Backend:
 cd Backend
 npm test
 npm run lint
+npm run test:worker
 ```
 
 Frontend:
@@ -90,23 +173,10 @@ npm run build
 npm run test:browser
 ```
 
-The browser smoke test uses the locally installed Google Chrome executable. It validates login, role login endpoints, core APIs, realtime, all SPA modules, React-Leaflet routes/zones, Polar Network switching and runtime errors.
+The browser smoke test covers authentication, roles, core APIs, realtime, SPA modules, routes/zones, Polar Network switching, and browser runtime errors.
 
-For production-build/offline verification:
-
-```bash
-cd Frontend
-npm run build
-npm run preview
-POLAROPS_BASE_URL=http://127.0.0.1:4173 POLAROPS_CHECK_OFFLINE=1 node src/utils/scripts/browser-smoke.mjs
-```
-
-See `Backend/utils/docs/PHASE_VALIDATION.md` for the completed phase record.
+See `Backend/utils/docs/PHASE_VALIDATION.md` for the earlier local-refactor validation record.
 
 ## Data boundaries
 
-Arctic / North and Antarctic / South remain separate operational/reference contexts. Public station/facility records retain source and verification metadata. Synthetic demo records are not labeled as live data.
-
-## Git and deployment
-
-Work remains on `node-react-refactor`. Do not merge to `main`, push, deploy, run remote migrations, alter DNS, or change production Cloudflare resources without explicit approval.
+Arctic / North and Antarctic / South remain separate operational/reference contexts. Public station and facility records retain source/verification metadata. Synthetic demo records are not represented as live operational data.

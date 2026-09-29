@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDatabase } from '../config/database.js';
 
-test('local SQLite migrations and reference seeds initialize', () => {
-  const db = createDatabase(':memory:');
+test('local SQLite migrations and reference seeds initialize', async () => {
+  const db = await createDatabase(':memory:');
   const migrations = Number(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count);
   const users = Number(db.prepare('SELECT COUNT(*) AS count FROM users').get().count);
   const expeditions = Number(db.prepare('SELECT COUNT(*) AS count FROM expeditions').get().count);

@@ -1,130 +1,120 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
-import { env } from './env.js';
-import { parseCsv } from '../csv.js';
+let d1Database = null;
+let localDatabaseOverride = null;
+let localModulePromise = null;
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const backendRoot = path.resolve(here, '..');
-let database;
-
-function resolveDatabasePath(value) {
-  if (value === ':memory:') return value;
-  return path.isAbsolute(value) ? value : path.resolve(backendRoot, value);
+function normalizeParams(params) {
+  return params.map((value) => (value === undefined ? null : value));
 }
 
-function applyMigrations(db) {
-  db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
-    name TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL
-  )`);
-  const migrationDir = path.resolve(backendRoot, 'db', 'migrations');
-  const files = fs.readdirSync(migrationDir).filter((name) => name.endsWith('.sql')).sort();
-  const seen = new Set(db.prepare('SELECT name FROM schema_migrations').all().map((row) => row.name));
-  for (const name of files) {
-    if (seen.has(name)) continue;
-    const sql = fs.readFileSync(path.join(migrationDir, name), 'utf8');
-    db.exec('BEGIN IMMEDIATE');
+async function localModule() {
+  if (!localModulePromise) {
+    localModulePromise = import('./localDatabase.js');
+  }
+  return localModulePromise;
+}
+
+export function bindD1Database(database) {
+  d1Database = database || null;
+}
+
+export function usingD1() {
+  return Boolean(d1Database);
+}
+
+export async function createDatabase(databaseUrl) {
+  const local = await localModule();
+  return local.createLocalDatabase(databaseUrl);
+}
+
+export async function initDatabase(databaseUrl) {
+  if (d1Database) return d1Database;
+  if (localDatabaseOverride) return localDatabaseOverride;
+  const local = await localModule();
+  return local.initLocalDatabase(databaseUrl);
+}
+
+export function setDatabaseForTest(database) {
+  d1Database = null;
+  localDatabaseOverride = database;
+  return database;
+}
+
+export async function getDb() {
+  if (d1Database) return d1Database;
+  if (localDatabaseOverride) return localDatabaseOverride;
+  const local = await localModule();
+  return local.getLocalDb();
+}
+
+export async function closeDatabase() {
+  if (localDatabaseOverride) {
     try {
-      db.exec(sql);
-      db.prepare('INSERT INTO schema_migrations(name,applied_at) VALUES(?,?)').run(name, new Date().toISOString());
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw new Error(`Migration ${name} failed: ${error.message}`);
+      localDatabaseOverride.close();
+    } catch {}
+    localDatabaseOverride = null;
+  }
+  if (!d1Database) {
+    const local = await localModule();
+    local.closeLocalDatabase();
+  }
+}
+
+export async function all(sql, ...params) {
+  const values = normalizeParams(params);
+  if (d1Database) {
+    const statement = d1Database.prepare(sql).bind(...values);
+    const result = await statement.all();
+    return result.results || [];
+  }
+  const database = await getDb();
+  return database.prepare(sql).all(...values);
+}
+
+export async function get(sql, ...params) {
+  const values = normalizeParams(params);
+  if (d1Database) {
+    const statement = d1Database.prepare(sql).bind(...values);
+    return (await statement.first()) || undefined;
+  }
+  const database = await getDb();
+  return database.prepare(sql).get(...values);
+}
+
+export async function run(sql, ...params) {
+  const values = normalizeParams(params);
+  if (d1Database) {
+    const statement = d1Database.prepare(sql).bind(...values);
+    const result = await statement.run();
+    return {
+      lastInsertRowid: Number(result.meta?.last_row_id || 0),
+      changes: Number(result.meta?.changes || 0),
+      meta: result.meta || {},
+      success: result.success !== false,
+    };
+  }
+  const database = await getDb();
+  return database.prepare(sql).run(...values);
+}
+
+export async function seedFacilitiesSnapshot(database, force = false) {
+  if (d1Database) {
+    const row = await get('SELECT COUNT(*) AS count FROM public_facilities');
+    return Number(row?.count || 0);
+  }
+  const local = await localModule();
+  const db = database || localDatabaseOverride || local.getLocalDb();
+  return local.seedFacilitiesSnapshot(db, force);
+}
+
+export async function migrationCount() {
+  if (d1Database) {
+    try {
+      const row = await get('SELECT COUNT(*) AS count FROM d1_migrations');
+      return Number(row?.count || 0);
+    } catch {
+      return 0;
     }
   }
-}
-
-export function seedFacilitiesSnapshot(db = getDb(), force = false) {
-  const count = Number(db.prepare('SELECT COUNT(*) AS count FROM public_facilities').get()?.count || 0);
-  if (count > 0 && !force) return count;
-  const csvPath = path.resolve(backendRoot, 'data', 'reference', 'Facilities_Nov2024.csv');
-  if (!fs.existsSync(csvPath)) return;
-  const rows = parseCsv(fs.readFileSync(csvPath, 'utf8'));
-  const insert = db.prepare(`INSERT OR IGNORE INTO public_facilities
-    (source_key,name,country,programme,facility_type,seasonality,status,latitude,longitude,source,source_url,source_updated_at,raw_json,synced_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const now = new Date().toISOString();
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    for (const row of rows) {
-      const key = row['Record ID#'] || row['English Name'];
-      if (!key || !row['English Name']) continue;
-      insert.run(
-        `comnap:${key}`,
-        row['English Name'],
-        row['Operator (primary)'] || '',
-        [row['Operator (primary)'], row['Operator (additional)']].filter(Boolean).join('; '),
-        row.Type || 'Facility',
-        row.Seasonality || '',
-        row.Status || '',
-        row['Latitude (DD)'] === '' ? null : Number(row['Latitude (DD)']),
-        row['Longitude (DD)'] === '' ? null : Number(row['Longitude (DD)']),
-        'COMNAP',
-        'https://www.comnap.aq/antarctic-facilities-information',
-        'November 2024',
-        JSON.stringify(row),
-        now,
-      );
-    }
-    db.prepare(`INSERT OR REPLACE INTO data_sources(name,source_url,last_sync,last_status,details)
-      VALUES(?,?,?,?,?)`).run(
-        'COMNAP Facilities',
-        'https://www.comnap.aq/antarctic-facilities-information',
-        now,
-        'Loaded local reference snapshot',
-        'Local November 2024 COMNAP snapshot. Reference data, not a live feed.',
-      );
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-}
-
-export function createDatabase(databaseUrl = env.databaseUrl) {
-  const dbPath = resolveDatabasePath(databaseUrl);
-  if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA journal_mode = WAL');
-  applyMigrations(db);
-  seedFacilitiesSnapshot(db);
-  return db;
-}
-
-export function initDatabase(databaseUrl = env.databaseUrl) {
-  if (!database) database = createDatabase(databaseUrl);
-  return database;
-}
-
-export function setDatabaseForTest(db) {
-  if (database && database !== db) {
-    try { database.close(); } catch {}
-  }
-  database = db;
-  return database;
-}
-
-export function getDb() {
-  return database || initDatabase();
-}
-
-export function closeDatabase() {
-  if (database) database.close();
-  database = undefined;
-}
-
-export function all(sql, ...params) {
-  return getDb().prepare(sql).all(...params);
-}
-
-export function get(sql, ...params) {
-  return getDb().prepare(sql).get(...params);
-}
-
-export function run(sql, ...params) {
-  return getDb().prepare(sql).run(...params);
+  const row = await get('SELECT COUNT(*) AS count FROM schema_migrations');
+  return Number(row?.count || 0);
 }

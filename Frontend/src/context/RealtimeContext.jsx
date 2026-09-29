@@ -4,6 +4,24 @@ import { useExpedition } from './ExpeditionContext'
 
 const RealtimeContext = createContext({ revision: 0, connected: false })
 
+const DEFAULT_REALTIME_BASE = import.meta.env.PROD
+  ? 'https://polarops-api.pexxoraa.workers.dev'
+  : ''
+const REALTIME_BASE = (
+  import.meta.env.VITE_REALTIME_BASE || DEFAULT_REALTIME_BASE
+).replace(/\/$/, '')
+
+function realtimeBase() {
+  if (REALTIME_BASE) {
+    return REALTIME_BASE
+      .replace(/^https:/i, 'wss:')
+      .replace(/^http:/i, 'ws:')
+  }
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return proto + '//' + window.location.host
+}
+
 export function RealtimeProvider({ children }) {
   const { selectedId } = useExpedition()
   const [revision, setRevision] = useState(0)
@@ -18,8 +36,13 @@ export function RealtimeProvider({ children }) {
       try {
         const { ticket } = await api.get('/api/realtime/ticket?expedition_id=' + selectedId)
         if (stopped) return
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        socket = new WebSocket(proto + '//' + window.location.host + '/ws/expeditions/' + selectedId + '?ticket=' + encodeURIComponent(ticket))
+        socket = new WebSocket(
+          realtimeBase() +
+            '/ws/expeditions/' +
+            selectedId +
+            '?ticket=' +
+            encodeURIComponent(ticket),
+        )
         socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: getAuthToken() }))
         socket.onmessage = (event) => {
           try {

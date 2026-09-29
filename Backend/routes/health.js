@@ -1,11 +1,23 @@
 import { Router } from 'express';
-import { get } from '../utils/config/database.js';
+import {
+  migrationCount,
+  usingD1,
+} from '../utils/config/database.js';
 
 const router = Router();
 
-router.get('/', (req, res) => {
-  const migrations = Number(get('SELECT COUNT(*) AS count FROM schema_migrations')?.count || 0);
-  res.json({ ok: true, service: 'polarops-backend', database: 'sqlite', migrations, time: new Date().toISOString() });
+router.get('/', async (req, res, next) => {
+  try {
+    res.json({
+      ok: true,
+      service: 'polarops-backend',
+      database: usingD1() ? 'd1' : 'sqlite',
+      migrations: await migrationCount(),
+      time: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 export default router;

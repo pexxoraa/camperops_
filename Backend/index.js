@@ -1,8 +1,8 @@
 import http from 'node:http';
-import { env } from './utils/config/env.js';
+import { assertRuntimeConfig, env } from './utils/config/env.js';
 import { initDatabase } from './utils/config/database.js';
 import { createApp } from './utils/app.js';
-import { configureRealtime } from './utils/services/realtimeService.js';
+import { configureRealtime } from './utils/services/localRealtimeService.js';
 import { detectBackendOnPort } from './utils/startupGuard.js';
 
 const host = '127.0.0.1';
@@ -28,7 +28,8 @@ async function startBackend() {
     return;
   }
 
-  initDatabase();
+  assertRuntimeConfig();
+  await initDatabase();
   app = createApp();
   server = http.createServer(app);
   configureRealtime(server);

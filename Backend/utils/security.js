@@ -41,36 +41,41 @@ export function verifyPassword(password, encoded) {
   }
 }
 
-export function makeToken(user) {
+export function makeToken(user, secret = env.authSecret) {
   return signPayload({
     uid: Number(user.id),
     oid: Number(user.organization_id),
     email: user.email,
     role: user.role,
     exp: Math.floor(Date.now() / 1000) + TOKEN_HOURS * 3600,
-  });
+  }, secret);
 }
 
-export function decodeToken(token) {
+export function decodeToken(token, secret = env.authSecret) {
   try {
-    return decodeSignedPayload(token);
+    return decodeSignedPayload(token, secret);
   } catch {
     throw new HttpError(401, 'Invalid or expired session');
   }
 }
 
-export function makeRealtimeTicket(user, expeditionId, ttlSeconds = 60) {
+export function makeRealtimeTicket(
+  user,
+  expeditionId,
+  ttlSeconds = 60,
+  secret = env.authSecret,
+) {
   return signPayload({
     uid: Number(user.id),
     oid: Number(user.organization_id),
     eid: Number(expeditionId),
     purpose: 'expedition_ws',
     exp: Math.floor(Date.now() / 1000) + ttlSeconds,
-  });
+  }, secret);
 }
 
-export function decodeRealtimeTicket(ticket) {
-  const payload = decodeSignedPayload(ticket);
+export function decodeRealtimeTicket(ticket, secret = env.authSecret) {
+  const payload = decodeSignedPayload(ticket, secret);
   if (payload.purpose !== 'expedition_ws') throw new Error('Wrong realtime ticket purpose');
   return payload;
 }

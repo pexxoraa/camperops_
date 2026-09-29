@@ -1,6 +1,7 @@
 import { useState } from "react";
 import api from "../utils/services/api";
 import { useExpedition } from "../context/ExpeditionContext";
+import ActionFormModal from "./ActionFormModal";
 import Alert from "./Alert";
 import CargoQrScanner from "./CargoQrScanner";
 import DataTable from "./DataTable";
@@ -19,6 +20,12 @@ export default function Cargo() {
   const [custodyForm, setCustodyForm] = useState({});
   const [custodyLocations, setCustodyLocations] = useState([]);
   const [custodyError, setCustodyError] = useState("");
+  const [move, setMove] = useState(null);
+  const [moveForm, setMoveForm] = useState({});
+  const [moveLocations, setMoveLocations] = useState([]);
+  const [moveError, setMoveError] = useState("");
+  const [moveBusy, setMoveBusy] = useState(false);
+  const [qrCopyValue, setQrCopyValue] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function openHistory(row) {
@@ -103,17 +110,48 @@ export default function Cargo() {
       setBusy(false);
     }
   }
-  async function moveCargo(row, refresh) {
-    const location = window.prompt("Destination location ID");
-    if (!location) return;
-    const status =
-      window.prompt("New status", row.status || "In Transit") || row.status;
-    await api.post("/api/cargo/" + row.id + "/move", {
-      location_id: Number(location),
-      status,
-      note: "Moved from React console",
+  async function openMove(row, refresh) {
+    setMove({ row, refresh });
+    setMoveError("");
+    setMoveLocations([]);
+    setMoveForm({
+      location_id: row.current_location_id
+        ? String(row.current_location_id)
+        : "",
+      status: row.status === "Delivered" ? "Delivered" : "In Transit",
+      note: "",
     });
-    refresh();
+
+    try {
+      const locations = await api.get(
+        "/api/locations?expedition_id=" + row.expedition_id,
+      );
+      setMoveLocations(locations);
+    } catch (error) {
+      setMoveError(error.message);
+    }
+  }
+
+  async function submitMove(event) {
+    event.preventDefault();
+    if (!move?.row) return;
+
+    setMoveBusy(true);
+    setMoveError("");
+    try {
+      await api.post("/api/cargo/" + move.row.id + "/move", {
+        location_id: Number(moveForm.location_id),
+        status: moveForm.status,
+        note: moveForm.note || "Cargo movement recorded",
+      });
+      await move.refresh?.();
+      setMove(null);
+      setMoveLocations([]);
+    } catch (error) {
+      setMoveError(error.message);
+    } finally {
+      setMoveBusy(false);
+    }
   }
 
   async function copyQrValue(row) {
@@ -122,7 +160,7 @@ export default function Cargo() {
     try {
       await navigator.clipboard.writeText(value);
     } catch {
-      window.prompt("Copy this QR value", value);
+      setQrCopyValue(value);
     }
   }
 
@@ -178,7 +216,7 @@ export default function Cargo() {
           <div className="inline-actions">
             <button
               className="button small"
-              onClick={() => moveCargo(row, refresh)}
+              onClick={() => openMove(row, refresh)}
             >
               Move
             </button>
@@ -231,6 +269,67 @@ export default function Cargo() {
           </div>
           <button className="button primary">Find cargo</button>
         </form>
+      </Modal>
+
+      <ActionFormModal
+        open={Boolean(move)}
+        title="Move cargo"
+        subtitle={move?.row ? "Cargo ID " + move.row.code : ""}
+        fields={[
+          {
+            name: "location_id",
+            label: "Destination location",
+            type: "select",
+            required: true,
+            options: moveLocations.map((location) => ({
+              value: String(location.id),
+              label: location.name + " · " + location.type,
+            })),
+          },
+          {
+            name: "status",
+            label: "New status",
+            type: "select",
+            required: true,
+            placeholder: false,
+            options: ["Registered", "In Transit", "Delivered", "Held"],
+          },
+          {
+            name: "note",
+            label: "Movement note",
+            type: "textarea",
+            wide: true,
+            placeholder: "Optional movement details",
+          },
+        ]}
+        form={moveForm}
+        setForm={setMoveForm}
+        onClose={() => {
+          setMove(null);
+          setMoveError("");
+          setMoveLocations([]);
+        }}
+        onSubmit={submitMove}
+        submitLabel="Record movement"
+        busy={moveBusy}
+        error={moveError}
+      />
+
+      <Modal
+        open={Boolean(qrCopyValue)}
+        title="Cargo QR value"
+        subtitle="Copy this value manually if clipboard access is unavailable."
+        onClose={() => setQrCopyValue("")}
+      >
+        <div className="field">
+          <label htmlFor="cargo-qr-copy-value">QR value</label>
+          <input
+            id="cargo-qr-copy-value"
+            readOnly
+            value={qrCopyValue}
+            onFocus={(event) => event.target.select()}
+          />
+        </div>
       </Modal>
 
       <Modal

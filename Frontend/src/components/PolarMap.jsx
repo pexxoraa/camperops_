@@ -11,6 +11,23 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
+const BASEMAPS = {
+  map: {
+    label: "Map",
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "© OpenStreetMap contributors",
+    attributionUrl: "https://www.openstreetmap.org/copyright",
+  },
+  satellite: {
+    label: "Satellite",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution:
+      "Imagery © Esri, Vantor, Earthstar Geographics, GIS User Community",
+    attributionUrl:
+      "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer",
+  },
+};
+
 const MARKER_META = {
   base: { label: "Expedition base / station", short: "B" },
   camp: { label: "Field camp", short: "C" },
@@ -33,13 +50,34 @@ function markerIcon(category = "mission") {
   });
 }
 
-function MapViewSync({ center, zoom }) {
+function MapViewSync({ center, zoom, viewKey, fullscreen }) {
   const map = useMap();
+  const latitude = Number(center[0]);
+  const longitude = Number(center[1]);
 
   useEffect(() => {
-    map.setView(center, zoom, { animate: false });
-    map.invalidateSize();
-  }, [map, center, zoom]);
+    map.setView([latitude, longitude], zoom, { animate: false });
+  }, [map, viewKey, latitude, longitude, zoom]);
+
+  useEffect(() => {
+    const container = map.getContainer();
+    const refreshSize = () =>
+      map.invalidateSize({ animate: false, pan: false });
+
+    refreshSize();
+    const firstTimer = window.setTimeout(refreshSize, 80);
+    const secondTimer = window.setTimeout(refreshSize, 260);
+    const observer = new ResizeObserver(refreshSize);
+    observer.observe(container);
+    window.addEventListener("resize", refreshSize);
+
+    return () => {
+      window.clearTimeout(firstTimer);
+      window.clearTimeout(secondTimer);
+      observer.disconnect();
+      window.removeEventListener("resize", refreshSize);
+    };
+  }, [map, fullscreen]);
 
   return null;
 }
@@ -50,8 +88,13 @@ export default function PolarMap({
   routes = [],
   geofences = [],
   height = 430,
+  viewKey = region,
+  square = false,
+  legendPlacement = "overlay",
 }) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [basemap, setBasemap] = useState("map");
+  const basemapConfig = BASEMAPS[basemap];
   const validMarkers = useMemo(
     () =>
       markers.filter(
@@ -85,18 +128,40 @@ export default function PolarMap({
   );
 
   return (
-    <div className="polar-map-block">
+    <div
+      className={
+        "polar-map-block" +
+        (square ? " polar-map-block--square" : "") +
+        (legendPlacement === "footer" ? " polar-map-block--footer-legend" : "")
+      }
+    >
       <div
         className={fullscreen ? "polar-map fullscreen" : "polar-map"}
-        style={{ height: fullscreen ? undefined : height }}
+        style={{ "--polar-map-height": height + "px" }}
       >
-        <button
-          className="map-fullscreen-button"
-          onClick={() => setFullscreen((value) => !value)}
-        >
-          {fullscreen ? "Exit fullscreen" : "Fullscreen"}
-        </button>
-        {legendCategories.length ? (
+        <div className="map-action-bar">
+          <div className="map-basemap-switch" aria-label="Map view">
+            {Object.entries(BASEMAPS).map(([key, config]) => (
+              <button
+                key={key}
+                type="button"
+                className={basemap === key ? "active" : ""}
+                aria-pressed={basemap === key}
+                onClick={() => setBasemap(key)}
+              >
+                {config.label}
+              </button>
+            ))}
+          </div>
+          <button
+            className="map-fullscreen-button"
+            type="button"
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            {fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          </button>
+        </div>
+        {legendPlacement === "overlay" && legendCategories.length ? (
           <div className="polar-map-legend" aria-label="Map marker legend">
             {legendCategories.map((category) => (
               <span key={category}>
@@ -110,13 +175,34 @@ export default function PolarMap({
         ) : null}
         <MapContainer
           center={center}
-          zoom={3}
+          zoom={4}
+          minZoom={2}
+          maxZoom={8}
+          maxBounds={[
+            [-85, -180],
+            [85, 180],
+          ]}
+          maxBoundsViscosity={1}
           scrollWheelZoom
+          worldCopyJump={false}
           attributionControl={false}
           className="leaflet-host"
         >
-          <MapViewSync center={center} zoom={3} />
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <MapViewSync
+            center={center}
+            zoom={4}
+            viewKey={viewKey}
+            fullscreen={fullscreen}
+          />
+          <TileLayer
+            key={basemap}
+            url={basemapConfig.url}
+            minZoom={2}
+            maxZoom={8}
+            noWrap
+            keepBuffer={4}
+            updateWhenZooming={false}
+          />
           {validMarkers.map((item, index) => {
             const category = item.markerCategory || "mission";
 
@@ -173,11 +259,27 @@ export default function PolarMap({
               </Popup>
             </Circle>
           ))}
+          <a
+            className="polar-map-attribution"
+            href={basemapConfig.attributionUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {basemapConfig.attribution}
+          </a>
         </MapContainer>
       </div>
-      {!fullscreen ? (
-        <div className="polar-map-source">
-          Map data © OpenStreetMap contributors
+      {legendPlacement === "footer" && legendCategories.length ? (
+        <div
+          className="polar-map-legend polar-map-legend--footer"
+          aria-label="Map marker legend"
+        >
+          {legendCategories.map((category) => (
+            <span key={category}>
+              <i className={"polar-legend-dot polar-legend-dot--" + category} />
+              {MARKER_META[category].label}
+            </span>
+          ))}
         </div>
       ) : null}
     </div>

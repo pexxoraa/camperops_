@@ -70,7 +70,7 @@ export default function PolarNetwork() {
           ? "COMNAP bundled reference snapshot · November 2024 · reference data, not a live operations feed."
           : "Arctic research-station reference records retain verification/source metadata and are not presented as live operations."}
       </div>
-      <PolarMap region={mode} markers={markers} />
+      <PolarMap region={mode} markers={markers} viewKey={mode} />
       <div className="panel">
         <DataTable
           rows={rows}

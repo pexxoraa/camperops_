@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { createApp } from '../app.js';
 import { createDatabase, setDatabaseForTest } from '../config/database.js';
-import { configureRealtime } from '../services/realtimeService.js';
+import { configureRealtime } from '../services/localRealtimeService.js';
 
 async function startFixture() {
-  const db=createDatabase(':memory:');
+  const db=await createDatabase(':memory:');
   db.prepare('INSERT INTO organizations(id,name,country_code,operator_type,created_at) VALUES(99,?,?,?,?)')
     .run('Other Programme','ZZ','Research','2026-09-29T00:00:00Z');
   db.prepare('INSERT INTO expeditions(id,organization_id,name,region,status,created_at) VALUES(99,99,?,?,?,?)')

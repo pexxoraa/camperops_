@@ -31,6 +31,8 @@ export default function Routes() {
   const { revision } = useRealtime();
   const [data, setData] = useState({ items: [], geofences: [] });
   const [locations, setLocations] = useState([]);
+  const [vehicles, setVehicles] = useState([]);
+  const [personnel, setPersonnel] = useState([]);
   const [telemetry, setTelemetry] = useState([]);
   const [referenceStations, setReferenceStations] = useState([]);
   const [route, setRoute] = useState(routeDefaults);
@@ -41,13 +43,23 @@ export default function Routes() {
   const refresh = useCallback(async () => {
     if (!selectedId) return;
     try {
-      const [routeData, locationData, telemetryData] = await Promise.all([
+      const [
+        routeData,
+        locationData,
+        vehicleData,
+        personnelData,
+        telemetryData,
+      ] = await Promise.all([
         api.get("/api/ops/routes?expedition_id=" + selectedId),
         api.get("/api/locations?expedition_id=" + selectedId),
+        api.get("/api/vehicles?expedition_id=" + selectedId),
+        api.get("/api/personnel?expedition_id=" + selectedId),
         api.get("/api/telemetry/latest?expedition_id=" + selectedId),
       ]);
       setData(routeData);
       setLocations(locationData);
+      setVehicles(vehicleData);
+      setPersonnel(personnelData);
       setTelemetry(telemetryData);
     } catch (err) {
       setError(err.message);
@@ -184,212 +196,248 @@ export default function Routes() {
         </div>
       </div>
       {error ? <Alert tone="danger">{error}</Alert> : null}
-      <PolarMap
-        region={polarRegion}
-        markers={markers}
-        routes={data.items}
-        geofences={data.geofences}
-      />
-      <div className="two-column forms-row">
-        <form className="panel route-form" onSubmit={submitRoute}>
-          <div className="panel-title">
-            <h2>Plan route</h2>
-            <span>Distance, ETA and fuel calculated by backend</span>
+      <div className="routes-workspace">
+        <div className="panel routes-map-panel">
+          <div className="panel-title routes-map-heading">
+            <div>
+              <h2>Operational map</h2>
+              <span>
+                {markers.length} mapped points · {data.items.length} routes ·{" "}
+                {data.geofences.length} zones
+              </span>
+            </div>
           </div>
-          <div className="form-grid">
-            <label className="wide">
-              <span>Route name</span>
-              <input
-                required
-                value={route.name}
-                onChange={(e) => setRoute({ ...route, name: e.target.value })}
-              />
-            </label>
-            <label>
-              <span>Start latitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={route.start_lat}
-                onChange={(e) =>
-                  setRoute({ ...route, start_lat: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Start longitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={route.start_lon}
-                onChange={(e) =>
-                  setRoute({ ...route, start_lon: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Destination latitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={route.end_lat}
-                onChange={(e) =>
-                  setRoute({ ...route, end_lat: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Destination longitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={route.end_lon}
-                onChange={(e) =>
-                  setRoute({ ...route, end_lon: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Vehicle ID</span>
-              <input
-                type="number"
-                value={route.vehicle_id}
-                onChange={(e) =>
-                  setRoute({ ...route, vehicle_id: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Team leader ID</span>
-              <input
-                type="number"
-                value={route.personnel_id}
-                onChange={(e) =>
-                  setRoute({ ...route, personnel_id: e.target.value })
-                }
-              />
-            </label>
-            <label className="wide">
-              <span>Risk summary</span>
-              <textarea
-                value={route.risk_summary}
-                onChange={(e) =>
-                  setRoute({ ...route, risk_summary: e.target.value })
-                }
-              />
-            </label>
-            <button className="button primary wide">Save route</button>
-          </div>
-        </form>
-        <form className="panel route-form" onSubmit={submitZone}>
-          <div className="panel-title">
-            <h2>Create geofence</h2>
-            <span>Safe, restricted, hazard, landing or science zone</span>
-          </div>
-          <div className="form-grid">
-            <label className="wide">
-              <span>Zone name</span>
-              <input
-                required
-                value={zone.name}
-                onChange={(e) => setZone({ ...zone, name: e.target.value })}
-              />
-            </label>
-            <label>
-              <span>Type</span>
-              <select
-                value={zone.kind}
-                onChange={(e) => setZone({ ...zone, kind: e.target.value })}
-              >
-                <option>Safe zone</option>
-                <option>Restricted zone</option>
-                <option>Hazard zone</option>
-                <option>Landing zone</option>
-                <option>Science zone</option>
-              </select>
-            </label>
-            <label>
-              <span>Severity</span>
-              <select
-                value={zone.severity}
-                onChange={(e) => setZone({ ...zone, severity: e.target.value })}
-              >
-                <option>Advisory</option>
-                <option>Warning</option>
-                <option>Critical</option>
-              </select>
-            </label>
-            <label>
-              <span>Latitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={zone.center_lat}
-                onChange={(e) =>
-                  setZone({ ...zone, center_lat: e.target.value })
-                }
-              />
-            </label>
-            <label>
-              <span>Longitude</span>
-              <input
-                required
-                type="number"
-                step="any"
-                value={zone.center_lon}
-                onChange={(e) =>
-                  setZone({ ...zone, center_lon: e.target.value })
-                }
-              />
-            </label>
-            <label className="wide">
-              <span>Radius (m)</span>
-              <input
-                type="number"
-                value={zone.radius_m}
-                onChange={(e) => setZone({ ...zone, radius_m: e.target.value })}
-              />
-            </label>
-            <button className="button primary wide">Create zone</button>
-          </div>
-        </form>
-      </div>
-      <div className="panel">
-        <div className="panel-title">
-          <h2>Saved routes</h2>
+          <PolarMap
+            region={polarRegion}
+            markers={markers}
+            routes={data.items}
+            geofences={data.geofences}
+            viewKey={selectedId}
+            square
+            legendPlacement="footer"
+          />
         </div>
-        <DataTable
-          rows={data.items}
-          columns={[
-            { key: "name", label: "Route" },
-            { key: "distance_km", label: "Distance km" },
-            { key: "eta_minutes", label: "ETA min" },
-            { key: "fuel_liters", label: "Fuel L" },
-            { key: "vehicle_code", label: "Vehicle" },
-            { key: "personnel_name", label: "Team leader" },
-            { key: "status", label: "Status", badge: true },
-          ]}
-        />
-      </div>
-      <div className="panel">
-        <div className="panel-title">
-          <h2>Geofences</h2>
+        <div className="routes-control-stack">
+          <form className="panel route-form" onSubmit={submitRoute}>
+            <div className="panel-title">
+              <h2>Plan route</h2>
+              <span>Distance, ETA and fuel calculated by backend</span>
+            </div>
+            <div className="form-grid">
+              <label className="wide">
+                <span>Route name</span>
+                <input
+                  required
+                  value={route.name}
+                  onChange={(e) => setRoute({ ...route, name: e.target.value })}
+                />
+              </label>
+              <label>
+                <span>Start latitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={route.start_lat}
+                  onChange={(e) =>
+                    setRoute({ ...route, start_lat: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Start longitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={route.start_lon}
+                  onChange={(e) =>
+                    setRoute({ ...route, start_lon: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Destination latitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={route.end_lat}
+                  onChange={(e) =>
+                    setRoute({ ...route, end_lat: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Destination longitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={route.end_lon}
+                  onChange={(e) =>
+                    setRoute({ ...route, end_lon: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Vehicle</span>
+                <select
+                  value={route.vehicle_id}
+                  onChange={(e) =>
+                    setRoute({ ...route, vehicle_id: e.target.value })
+                  }
+                >
+                  <option value="">No vehicle assigned</option>
+                  {vehicles.map((vehicle) => (
+                    <option key={vehicle.id} value={vehicle.id}>
+                      {vehicle.code} · {vehicle.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Team leader</span>
+                <select
+                  value={route.personnel_id}
+                  onChange={(e) =>
+                    setRoute({ ...route, personnel_id: e.target.value })
+                  }
+                >
+                  <option value="">No team leader assigned</option>
+                  {personnel.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name} · {person.role}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="wide">
+                <span>Risk summary</span>
+                <textarea
+                  value={route.risk_summary}
+                  onChange={(e) =>
+                    setRoute({ ...route, risk_summary: e.target.value })
+                  }
+                />
+              </label>
+              <button className="button primary wide">Save route</button>
+            </div>
+          </form>
+          <form className="panel route-form" onSubmit={submitZone}>
+            <div className="panel-title">
+              <h2>Create geofence</h2>
+              <span>Safe, restricted, hazard, landing or science zone</span>
+            </div>
+            <div className="form-grid">
+              <label className="wide">
+                <span>Zone name</span>
+                <input
+                  required
+                  value={zone.name}
+                  onChange={(e) => setZone({ ...zone, name: e.target.value })}
+                />
+              </label>
+              <label>
+                <span>Type</span>
+                <select
+                  value={zone.kind}
+                  onChange={(e) => setZone({ ...zone, kind: e.target.value })}
+                >
+                  <option>Safe zone</option>
+                  <option>Restricted zone</option>
+                  <option>Hazard zone</option>
+                  <option>Landing zone</option>
+                  <option>Science zone</option>
+                </select>
+              </label>
+              <label>
+                <span>Severity</span>
+                <select
+                  value={zone.severity}
+                  onChange={(e) =>
+                    setZone({ ...zone, severity: e.target.value })
+                  }
+                >
+                  <option>Advisory</option>
+                  <option>Warning</option>
+                  <option>Critical</option>
+                </select>
+              </label>
+              <label>
+                <span>Latitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={zone.center_lat}
+                  onChange={(e) =>
+                    setZone({ ...zone, center_lat: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                <span>Longitude</span>
+                <input
+                  required
+                  type="number"
+                  step="any"
+                  value={zone.center_lon}
+                  onChange={(e) =>
+                    setZone({ ...zone, center_lon: e.target.value })
+                  }
+                />
+              </label>
+              <label className="wide">
+                <span>Radius (m)</span>
+                <input
+                  type="number"
+                  value={zone.radius_m}
+                  onChange={(e) =>
+                    setZone({ ...zone, radius_m: e.target.value })
+                  }
+                />
+              </label>
+              <button className="button primary wide">Create zone</button>
+            </div>
+          </form>
         </div>
-        <DataTable
-          rows={data.geofences}
-          columns={[
-            { key: "name", label: "Zone" },
-            { key: "kind", label: "Type" },
-            { key: "severity", label: "Severity", badge: true },
-            { key: "radius_m", label: "Radius m" },
-            { key: "active", label: "Active" },
-          ]}
-        />
+      </div>
+      <div className="routes-results-grid">
+        <div className="panel routes-data-panel">
+          <div className="panel-title">
+            <h2>Saved routes</h2>
+            <span>{data.items.length} total</span>
+          </div>
+          <DataTable
+            rows={data.items}
+            columns={[
+              { key: "name", label: "Route" },
+              { key: "distance_km", label: "Distance km" },
+              { key: "eta_minutes", label: "ETA min" },
+              { key: "fuel_liters", label: "Fuel L" },
+              { key: "vehicle_code", label: "Vehicle" },
+              { key: "personnel_name", label: "Team leader" },
+              { key: "status", label: "Status", badge: true },
+            ]}
+          />
+        </div>
+        <div className="panel routes-data-panel">
+          <div className="panel-title">
+            <h2>Geofences</h2>
+            <span>{data.geofences.length} total</span>
+          </div>
+          <DataTable
+            rows={data.geofences}
+            columns={[
+              { key: "name", label: "Zone" },
+              { key: "kind", label: "Type" },
+              { key: "severity", label: "Severity", badge: true },
+              { key: "radius_m", label: "Radius m" },
+              { key: "active", label: "Active" },
+            ]}
+          />
+        </div>
       </div>
     </section>
   );
