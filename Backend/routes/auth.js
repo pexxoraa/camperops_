@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { all, get, run } from '../config/database.js';
-import { authRequired } from '../middleware/auth.js';
-import { requireRole } from '../middleware/permissions.js';
+import { all, get, run } from '../utils/config/database.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requireRole } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
 import { ensureExpeditionAccess, requireFields } from '../utils/validation.js';
 import { hashPassword, makeRealtimeTicket, makeToken, verifyPassword } from '../utils/security.js';

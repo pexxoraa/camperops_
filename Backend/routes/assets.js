@@ -1,13 +1,13 @@
 import { Router } from 'express';
-import { all, get } from '../config/database.js';
+import { all, get } from '../utils/config/database.js';
 import Asset from '../models/Asset.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
 import { nowIso } from '../utils/helpers.js';
 import { ensureEntityInExpedition, ensureExpeditionAccess, requireFields } from '../utils/validation.js';
-import { recordActivity, recordAudit } from '../services/activityService.js';
-import { broadcast, makeEvent } from '../services/realtimeService.js';
+import { recordActivity, recordAudit } from '../utils/services/activityService.js';
+import { broadcast, makeEvent } from '../utils/services/realtimeService.js';
 
 const router=Router();router.use(authRequired);
 const details=(id)=>get(`SELECT a.*,l.name location_name,p.name assigned_to_name FROM assets a

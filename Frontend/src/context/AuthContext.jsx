@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import api, { getAuthToken, setAuthToken } from '../services/api'
+import api, { getAuthToken, setAuthToken } from '../utils/services/api'
 
 const AuthContext = createContext(null)
 const USER_KEY = 'polarops.user'

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { env } from './env.js';
-import { parseCsv } from '../utils/csv.js';
+import { parseCsv } from '../csv.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const backendRoot = path.resolve(here, '..');

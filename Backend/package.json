@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "test": "node --test tests/*.test.js",
-    "lint": "node scripts/lint.mjs"
+    "test": "node --test utils/tests/*.test.js",
+    "lint": "node utils/scripts/lint.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

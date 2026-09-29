@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useAuth } from '../context/AuthContext'
-import DataTable from '../components/DataTable'
+import DataTable from './DataTable'
 
 export default function Settings() {
   const { user } = useAuth()

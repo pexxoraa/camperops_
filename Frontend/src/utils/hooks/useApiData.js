@@ -1,6 +1,6 @@
 import { useCallback,useEffect,useState } from 'react';
 import { api } from '../services/api.js';
-import { useRealtime } from '../context/RealtimeContext.jsx';
+import { useRealtime } from '../../context/RealtimeContext.jsx';
 
 export function useApiData(path,enabled=true){
   const {revision}=useRealtime();

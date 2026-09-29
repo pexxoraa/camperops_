@@ -1,5 +1,5 @@
 import { run } from '../config/database.js';
-import { nowIso } from '../utils/helpers.js';
+import { nowIso } from '../helpers.js';
 
 export function recordActivity(expeditionId, category, message, userId = null) {
   run('INSERT INTO activity(expedition_id,category,message,user_id,created_at) VALUES(?,?,?,?,?)',

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import api from "../services/api";
+import api from "../utils/services/api";
 import { useExpedition } from "../context/ExpeditionContext";
 import { useRealtime } from "../context/RealtimeContext";
-import Alert from "../components/Alert";
-import DataTable from "../components/DataTable";
-import PolarMap from "../components/PolarMap";
+import Alert from "./Alert";
+import DataTable from "./DataTable";
+import PolarMap from "./PolarMap";
 import { getPolarRegion } from "../utils/polarRegion";
 
 const routeDefaults = {

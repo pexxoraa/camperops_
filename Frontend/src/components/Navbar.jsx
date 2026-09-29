@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useExpedition } from "../context/ExpeditionContext";
 import { useRealtime } from "../context/RealtimeContext";
-import api from "../services/api";
+import api from "../utils/services/api";
 import { getPolarRegionLabel } from "../utils/polarRegion";
 
 export default function Navbar() {

@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { ensureExpeditionAccess } from '../utils/validation.js';
-import { getDashboard } from '../services/dashboardService.js';
+import { getDashboard } from '../utils/services/dashboardService.js';
 
 const router=Router();
 router.get('/',authRequired,requirePermission('dashboard.read'),(req,res,next)=>{

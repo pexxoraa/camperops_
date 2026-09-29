@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { env } from '../config/env.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { env } from '../utils/config/env.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 
 const router=Router();
 router.use(authRequired);

@@ -1,6 +1,6 @@
 import { get } from '../config/database.js';
-import { decodeToken } from '../utils/security.js';
-import { HttpError } from '../utils/http.js';
+import { decodeToken } from '../security.js';
+import { HttpError } from '../http.js';
 
 export function authRequired(req, res, next) {
   try {

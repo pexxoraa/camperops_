@@ -1,13 +1,13 @@
 import { Router } from 'express';
-import { all, get } from '../config/database.js';
+import { all, get } from '../utils/config/database.js';
 import Vehicle from '../models/Vehicle.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
 import { nowIso } from '../utils/helpers.js';
 import { ensureEntityInExpedition, ensureExpeditionAccess, requireFields } from '../utils/validation.js';
-import { recordActivity, recordAudit } from '../services/activityService.js';
-import { broadcast, makeEvent } from '../services/realtimeService.js';
+import { recordActivity, recordAudit } from '../utils/services/activityService.js';
+import { broadcast, makeEvent } from '../utils/services/realtimeService.js';
 
 const router=Router();router.use(authRequired);
 const details=(id)=>get('SELECT v.*,l.name location_name FROM vehicles v LEFT JOIN locations l ON l.id=v.location_id WHERE v.id=?',Number(id));

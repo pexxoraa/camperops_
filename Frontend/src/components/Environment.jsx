@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useExpedition } from '../context/ExpeditionContext'
-import Loading from '../components/Loading'
+import Loading from './Loading'
 
 export default function Environment() {
   const { selectedId } = useExpedition()

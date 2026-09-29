@@ -1,4 +1,4 @@
-import { all, get, run } from '../config/database.js';
+import { all, get, run } from '../utils/config/database.js';
 
 export function createModel({ table, fields }) {
   const allowed = new Set(fields);

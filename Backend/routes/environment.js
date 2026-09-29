@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { ensureExpeditionAccess } from '../utils/validation.js';
-import { environmentOverview } from '../services/environmentService.js';
+import { environmentOverview } from '../utils/services/environmentService.js';
 
 const router=Router();
 router.get('/overview',authRequired,requirePermission('environment.read'),async(req,res,next)=>{

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useExpedition } from '../context/ExpeditionContext'
 import { useRealtime } from '../context/RealtimeContext'
 import Alert from './Alert'

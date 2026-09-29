@@ -1,4 +1,4 @@
-import { HttpError } from '../utils/http.js';
+import { HttpError } from '../http.js';
 
 const ROLE_PERMISSIONS = {
   commander: new Set(['*']),

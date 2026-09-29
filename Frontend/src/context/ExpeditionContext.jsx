@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useAuth } from './AuthContext'
 
 const ExpeditionContext = createContext(null)

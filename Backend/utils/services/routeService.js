@@ -1,6 +1,6 @@
 import { get, run } from '../config/database.js';
-import { nowIso } from '../utils/helpers.js';
-import { ensureEntityInExpedition, validateCoordinates } from '../utils/validation.js';
+import { nowIso } from '../helpers.js';
+import { ensureEntityInExpedition, validateCoordinates } from '../validation.js';
 
 export function haversineKm(lat1,lon1,lat2,lon2) {
   const rad=v=>v*Math.PI/180,dLat=rad(lat2-lat1),dLon=rad(lon2-lon1);

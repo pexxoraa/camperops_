@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useExpedition } from '../context/ExpeditionContext'
 import { useRealtime } from '../context/RealtimeContext'
-import DataTable from '../components/DataTable'
+import DataTable from './DataTable'
 
 export default function Operations() {
   const { selectedId } = useExpedition()

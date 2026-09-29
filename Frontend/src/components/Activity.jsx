@@ -1,4 +1,4 @@
-import ResourcePage from '../components/ResourcePage'
+import ResourcePage from './ResourcePage'
 
 export default function Activity() {
   return <ResourcePage

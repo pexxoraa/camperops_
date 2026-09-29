@@ -1,6 +1,6 @@
-@import "./styles/base.css";
-@import "./styles/reference-ui.css";
-@import "./styles/react.css";
+@import "./assets/styles/base.css";
+@import "./assets/styles/reference-ui.css";
+@import "./assets/styles/react.css";
 
 html,
 body,

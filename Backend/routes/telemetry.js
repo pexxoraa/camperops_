@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { all, get, run } from '../config/database.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { all, get, run } from '../utils/config/database.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { nowIso } from '../utils/helpers.js';
 import { ensureEntityInExpedition, ensureExpeditionAccess, requireFields, validateCoordinates } from '../utils/validation.js';
 

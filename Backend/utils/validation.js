@@ -1,4 +1,4 @@
-import { get } from '../config/database.js';
+import { get } from './config/database.js';
 import { HttpError } from './http.js';
 
 const SAFE_TABLES = new Set([

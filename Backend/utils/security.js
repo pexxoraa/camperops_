@@ -1,5 +1,5 @@
 import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
-import { env } from '../config/env.js';
+import { env } from './config/env.js';
 import { HttpError } from './http.js';
 
 const TOKEN_HOURS = 12;

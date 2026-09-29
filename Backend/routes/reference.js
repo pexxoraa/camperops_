@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { all, get, seedFacilitiesSnapshot } from '../config/database.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { all, get, seedFacilitiesSnapshot } from '../utils/config/database.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
 
 const router = Router();

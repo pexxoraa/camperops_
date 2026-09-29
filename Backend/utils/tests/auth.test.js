@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDatabase } from '../config/database.js';
-import { decodeToken, makeRealtimeTicket, makeToken, verifyPassword } from '../utils/security.js';
+import { decodeToken, makeRealtimeTicket, makeToken, verifyPassword } from '../security.js';
 
 test('demo password hashes remain compatible with Node PBKDF2', () => {
   const db = createDatabase(':memory:');

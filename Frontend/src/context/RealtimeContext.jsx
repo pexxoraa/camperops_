@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import api, { getAuthToken } from '../services/api'
+import api, { getAuthToken } from '../utils/services/api'
 import { useExpedition } from './ExpeditionContext'
 
 const RealtimeContext = createContext({ revision: 0, connected: false })

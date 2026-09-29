@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { all } from '../config/database.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { all } from '../utils/config/database.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { ensureExpeditionAccess } from '../utils/validation.js';
 
 const router=Router();

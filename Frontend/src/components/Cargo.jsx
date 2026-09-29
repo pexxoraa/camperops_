@@ -1,5 +1,5 @@
-import ResourcePage from '../components/ResourcePage'
-import api from '../services/api'
+import ResourcePage from './ResourcePage'
+import api from '../utils/services/api'
 
 export default function Cargo() {
   return <ResourcePage

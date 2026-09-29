@@ -1,8 +1,8 @@
 import http from 'node:http';
-import { env } from './config/env.js';
-import { initDatabase } from './config/database.js';
-import { createApp } from './app.js';
-import { configureRealtime } from './services/realtimeService.js';
+import { env } from './utils/config/env.js';
+import { initDatabase } from './utils/config/database.js';
+import { createApp } from './utils/app.js';
+import { configureRealtime } from './utils/services/realtimeService.js';
 
 initDatabase();
 const app=createApp();

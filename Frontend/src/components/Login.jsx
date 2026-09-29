@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import Alert from '../components/Alert'
+import Alert from './Alert'
 
 export default function Login() {
   const { user, login } = useAuth()

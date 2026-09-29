@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import api from '../services/api'
+import api from '../utils/services/api'
 import { useExpedition } from '../context/ExpeditionContext'
 import { useRealtime } from '../context/RealtimeContext'
-import DataTable from '../components/DataTable'
-import Loading from '../components/Loading'
-import StatusBadge from '../components/StatusBadge'
+import DataTable from './DataTable'
+import Loading from './Loading'
+import StatusBadge from './StatusBadge'
 
 const Metric = ({ label, value, detail }) => <div className="metric-card"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>
 

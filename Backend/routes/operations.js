@@ -1,20 +1,20 @@
 import { Router } from 'express';
-import { all, get, run } from '../config/database.js';
+import { all, get, run } from '../utils/config/database.js';
 import MissionTask from '../models/MissionTask.js';
 import Alert from '../models/Alert.js';
 import ScienceRecord from '../models/ScienceRecord.js';
 import Communication from '../models/Communication.js';
 import Readiness from '../models/Readiness.js';
 import Handover from '../models/Handover.js';
-import { authRequired } from '../middleware/auth.js';
-import { requirePermission } from '../middleware/permissions.js';
+import { authRequired } from '../utils/middleware/auth.js';
+import { requirePermission } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
 import { nowIso } from '../utils/helpers.js';
 import { ensureEntityInExpedition, ensureExpeditionAccess, requireFields, validateCoordinates } from '../utils/validation.js';
-import { recordAudit } from '../services/activityService.js';
-import { getUnifiedAlerts } from '../services/alertService.js';
-import { createPlannedRoute } from '../services/routeService.js';
-import { broadcast, makeEvent } from '../services/realtimeService.js';
+import { recordAudit } from '../utils/services/activityService.js';
+import { getUnifiedAlerts } from '../utils/services/alertService.js';
+import { createPlannedRoute } from '../utils/services/routeService.js';
+import { broadcast, makeEvent } from '../utils/services/realtimeService.js';
 
 const router = Router();
 router.use(authRequired);

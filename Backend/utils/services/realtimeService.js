@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { get } from '../config/database.js';
-import { decodeRealtimeTicket, decodeToken } from '../utils/security.js';
+import { decodeRealtimeTicket, decodeToken } from '../security.js';
 
 const rooms=new Map();
 const room=id=>{id=Number(id);if(!rooms.has(id))rooms.set(id,new Set());return rooms.get(id);};

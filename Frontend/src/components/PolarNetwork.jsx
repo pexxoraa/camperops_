@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import api from "../services/api";
-import DataTable from "../components/DataTable";
-import PolarMap from "../components/PolarMap";
-import Loading from "../components/Loading";
+import api from "../utils/services/api";
+import DataTable from "./DataTable";
+import PolarMap from "./PolarMap";
+import Loading from "./Loading";
 
 export default function PolarNetwork() {
   const [mode, setMode] = useState("south");
