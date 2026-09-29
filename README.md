@@ -2,7 +2,7 @@
 
 This branch is the local-development conversion of PolarOps to JavaScript, Node.js, Express, React and Vite.
 
-**No deployment is configured or performed by this refactor.** The original Cloudflare/Python implementation remains in the repository as reference material. See `NODE_REACT_ARCHITECTURE_AUDIT.md` and `NODE_REACT_MIGRATION_PLAN.md`.
+**No deployment is configured or performed by this refactor.** The active project is organized as a JavaScript-only `Backend/` + `Frontend/` workspace. Architecture and validation notes are kept under `Backend/utils/docs/`.
 
 ## Local stack
 
@@ -15,6 +15,28 @@ This branch is the local-development conversion of PolarOps to JavaScript, Node.
 - Offline: service worker shell cache + IndexedDB read cache/mutation queue
 
 No production D1 connection is used by the Node backend.
+
+## Project structure
+
+```text
+polarops-react/
+├── Backend/
+│   ├── models/
+│   ├── routes/
+│   ├── utils/
+│   ├── index.js
+│   ├── package.json
+│   └── package-lock.json
+├── Frontend/
+│   ├── public/
+│   ├── src/
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
+├── .github/
+├── .gitignore
+└── README.md
+```
 
 ## Run locally
 
@@ -76,10 +98,10 @@ For production-build/offline verification:
 cd Frontend
 npm run build
 npm run preview
-POLAROPS_BASE_URL=http://127.0.0.1:4173 POLAROPS_CHECK_OFFLINE=1 node scripts/browser-smoke.mjs
+POLAROPS_BASE_URL=http://127.0.0.1:4173 POLAROPS_CHECK_OFFLINE=1 node src/utils/scripts/browser-smoke.mjs
 ```
 
-See `PHASE_VALIDATION.md` for the completed phase record.
+See `Backend/utils/docs/PHASE_VALIDATION.md` for the completed phase record.
 
 ## Data boundaries
 

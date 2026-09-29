@@ -130,3 +130,87 @@ test('realtime websocket requires authorized ticket and session token', async (t
   assert.equal(message.type,'auth.ok');
   assert.equal(message.expedition_id,1);
 });
+
+test('cargo IDs, QR lookup and custody history remain linked', async (t) => {
+  const fixture = await startFixture()
+  t.after(async () => {
+    await new Promise((resolve) => fixture.server.close(resolve))
+    fixture.db.close()
+  })
+
+  const commander = await login(
+    fixture.base,
+    'commander@polarops.local',
+    'PolarOps123!',
+  )
+
+  let response = await api(fixture.base, commander.token, '/api/locations', {
+    method: 'POST',
+    body: JSON.stringify({
+      expedition_id: 1,
+      name: 'Cargo QR Test Depot',
+      type: 'Depot',
+      latitude: -75.1,
+      longitude: 123.2,
+    }),
+  })
+  assert.equal(response.status, 201)
+  const location = await response.json()
+
+  response = await api(fixture.base, commander.token, '/api/cargo', {
+    method: 'POST',
+    body: JSON.stringify({
+      expedition_id: 1,
+      code: 'QR-IT-001',
+      name: 'QR integration cargo',
+      current_location_id: location.id,
+      assigned_to: 'Depot Team',
+    }),
+  })
+  assert.equal(response.status, 201)
+  const cargo = await response.json()
+  assert.equal(cargo.code, 'QR-IT-001')
+  assert.equal(cargo.qr_value, 'POLAROPS:CARGO:1:QR-IT-001')
+
+  response = await api(
+    fixture.base,
+    commander.token,
+    '/api/cargo/lookup?expedition_id=1&value=' +
+      encodeURIComponent(cargo.qr_value),
+  )
+  assert.equal(response.status, 200)
+  const scanned = await response.json()
+  assert.equal(scanned.id, cargo.id)
+
+  response = await api(
+    fixture.base,
+    commander.token,
+    '/api/cargo/' + cargo.id + '/custody',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        to_custodian: 'Field Team Bravo',
+        location_id: location.id,
+        status: 'In Transit',
+        note: 'Transferred for field delivery',
+      }),
+    },
+  )
+  assert.equal(response.status, 200)
+  const transferred = await response.json()
+  assert.equal(transferred.assigned_to, 'Field Team Bravo')
+  assert.equal(transferred.status, 'In Transit')
+
+  response = await api(
+    fixture.base,
+    commander.token,
+    '/api/cargo/' + cargo.id + '/events',
+  )
+  assert.equal(response.status, 200)
+  const events = await response.json()
+  const handoff = events.find((item) => item.custody_action === 'Handoff')
+  assert.ok(handoff)
+  assert.equal(handoff.from_custodian, 'Depot Team')
+  assert.equal(handoff.to_custodian, 'Field Team Bravo')
+  assert.equal(handoff.location_name, 'Cargo QR Test Depot')
+})

@@ -451,3 +451,89 @@ button:disabled {
   text-align: right;
   user-select: none;
 }
+
+/* Cargo QR scanning and custody history */
+.cargo-scanner {
+  display: grid;
+  gap: 10px;
+}
+
+.cargo-scanner-frame {
+  position: relative;
+  min-height: 260px;
+  overflow: hidden;
+  border: 1px solid #b8ccd8;
+  border-radius: 10px;
+  background: #08141d;
+}
+
+.cargo-scanner-frame video {
+  display: block;
+  width: 100%;
+  min-height: 260px;
+  max-height: 360px;
+  object-fit: cover;
+}
+
+.cargo-scan-reticle {
+  position: absolute;
+  inset: 18% 24%;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 12px;
+  box-shadow: 0 0 0 999px rgba(4, 16, 25, 0.34);
+}
+
+.cargo-scanner p {
+  margin: 0;
+  color: var(--ref-muted);
+  font-size: 11px;
+}
+
+.cargo-scan-manual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 14px;
+}
+
+.cargo-history-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+.cargo-history-summary > div {
+  border: 1px solid var(--ref-line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fbfd;
+}
+
+.cargo-history-summary span,
+.cargo-history-summary strong {
+  display: block;
+}
+
+.cargo-history-summary span {
+  color: var(--ref-muted);
+  font-size: 10px;
+}
+
+.cargo-history-summary strong {
+  margin-top: 4px;
+  color: var(--ref-text);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .cargo-scan-manual,
+  .cargo-history-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .cargo-scan-manual .button {
+    width: 100%;
+  }
+}

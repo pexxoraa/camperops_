@@ -495,3 +495,90 @@ body {
     transform: rotate(360deg);
   }
 }
+
+/* PolarOps platform logo */
+.sidebar .brand.platform-brand {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 4px 4px 14px;
+  text-decoration: none;
+}
+
+.platform-logo-plate {
+  display: flex;
+  align-items: center;
+  width: 158px;
+  min-height: 0;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.02)
+  );
+}
+
+.platform-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter:
+    brightness(1.35)
+    saturate(1.12)
+    contrast(1.08)
+    drop-shadow(0 0 12px rgba(74, 190, 255, 0.28))
+    drop-shadow(0 2px 8px rgba(0, 0, 0, 0.38));
+}
+
+.sidebar .brand.platform-brand small {
+  padding-left: 4px;
+  color: #c7e6f8;
+  font-size: 9px;
+  letter-spacing: 1.25px;
+}
+
+.login-logo-plate {
+  display: grid;
+  gap: 4px;
+  width: min(280px, 34vw);
+  padding: 0;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.login-platform-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.login-logo-plate > span {
+  color: #e7f6ff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.55px;
+  text-shadow: 0 1px 8px rgba(0, 24, 42, 0.55);
+}
+
+@media (max-width: 1100px) {
+  .login-logo-plate {
+    width: min(245px, 38vw);
+  }
+}
+
+.login-scene-chip {
+  top: 182px;
+}
+
+@media (max-width: 1100px) {
+  .login-scene-chip {
+    top: 174px;
+  }
+}

@@ -12,8 +12,23 @@ import { broadcast, makeEvent } from '../utils/services/realtimeService.js';
 const router = Router();
 router.use(authRequired);
 
+function parseCargoScan(value, expectedExpeditionId) {
+  const raw = String(value || '').trim();
+  if (!raw) throw new HttpError(400, 'Cargo ID or QR value is required');
+
+  const match = raw.match(/^POLAROPS:CARGO:(\d+):(.+)$/i);
+  if (!match) return raw.toUpperCase();
+
+  const scannedExpeditionId = Number(match[1]);
+  if (scannedExpeditionId !== Number(expectedExpeditionId)) {
+    throw new HttpError(400, 'Scanned cargo belongs to another expedition');
+  }
+  return match[2].trim().toUpperCase();
+}
+
 const details = (id) => get(
-  `SELECT c.*,o.name origin_name,d.name destination_name,l.name location_name
+  `SELECT c.*,('POLAROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
+   o.name origin_name,d.name destination_name,l.name location_name
    FROM cargo c LEFT JOIN locations o ON o.id=c.origin_location_id
    LEFT JOIN locations d ON d.id=c.destination_location_id
    LEFT JOIN locations l ON l.id=c.current_location_id WHERE c.id=?`,
@@ -24,7 +39,8 @@ router.get('/', requirePermission('cargo.read'), (req, res, next) => {
   try {
     const expedition = ensureExpeditionAccess(req.user, req.query.expedition_id);
     res.json(all(
-      `SELECT c.*,o.name origin_name,d.name destination_name,l.name location_name
+      `SELECT c.*,('POLAROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
+       o.name origin_name,d.name destination_name,l.name location_name
        FROM cargo c LEFT JOIN locations o ON o.id=c.origin_location_id
        LEFT JOIN locations d ON d.id=c.destination_location_id
        LEFT JOIN locations l ON l.id=c.current_location_id
@@ -33,6 +49,21 @@ router.get('/', requirePermission('cargo.read'), (req, res, next) => {
     ));
   } catch (error) { next(error); }
 });
+
+router.get('/lookup', requirePermission('cargo.read'), (req, res, next) => {
+  try {
+    const expedition = ensureExpeditionAccess(req.user, req.query.expedition_id);
+    const code = parseCargoScan(req.query.value, expedition.id);
+    const item = get(
+      'SELECT id FROM cargo WHERE expedition_id=? AND upper(code)=upper(?)',
+      expedition.id,
+      code,
+    );
+    if (!item) throw new HttpError(404, 'Cargo ID not found');
+    res.json(details(item.id));
+  } catch (error) { next(error); }
+});
+
 router.post('/', requirePermission('cargo.manage'), (req, res, next) => {
   try {
     requireFields(req.body, 'expedition_id', 'code', 'name');
@@ -50,8 +81,21 @@ router.post('/', requirePermission('cargo.manage'), (req, res, next) => {
       unit: req.body.unit || 'unit', assigned_to: req.body.assigned_to || '',
       created_at: nowIso(),
     });
-    run('INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?,?)',
-      item.id, item.current_location_id, 'Registered', 'Cargo registered', req.user.id, nowIso());
+    run(
+      `INSERT INTO cargo_events(
+        cargo_id,location_id,event_type,note,user_id,created_at,
+        from_custodian,to_custodian,custody_action
+      ) VALUES(?,?,?,?,?,?,?,?,?)`,
+      item.id,
+      item.current_location_id,
+      'Registered',
+      'Cargo registered',
+      req.user.id,
+      nowIso(),
+      '',
+      item.assigned_to || '',
+      'Registered',
+    );
     recordActivity(expedition.id, 'cargo', 'Cargo ' + item.code + ' registered', req.user.id);
     recordAudit(req.user, expedition.id, 'created', 'cargo', item.id, req.body);
     broadcast(expedition.id, makeEvent('cargo.created', expedition.id, 'cargo', item.id));
@@ -85,14 +129,80 @@ router.post('/:id/move', requirePermission('cargo.manage'), (req, res, next) => 
     requireFields(req.body, 'location_id');
     const status = req.body.status || item.status;
     Cargo.update(item.id, { current_location_id: Number(req.body.location_id), status });
-    run('INSERT INTO cargo_events(cargo_id,location_id,event_type,note,user_id,created_at) VALUES(?,?,?,?,?,?)',
-      item.id, Number(req.body.location_id), 'Movement', req.body.note || '', req.user.id, nowIso());
+    run(
+      `INSERT INTO cargo_events(
+        cargo_id,location_id,event_type,note,user_id,created_at,
+        from_custodian,to_custodian,custody_action
+      ) VALUES(?,?,?,?,?,?,?,?,?)`,
+      item.id,
+      Number(req.body.location_id),
+      'Movement',
+      req.body.note || '',
+      req.user.id,
+      nowIso(),
+      item.assigned_to || '',
+      item.assigned_to || '',
+      'Movement',
+    );
     recordActivity(item.expedition_id, 'cargo', 'Cargo ' + item.code + ' moved', req.user.id);
     recordAudit(req.user, item.expedition_id, 'moved', 'cargo', item.id, req.body);
     broadcast(item.expedition_id, makeEvent('cargo.moved', item.expedition_id, 'cargo', item.id));
     res.json(details(item.id));
   } catch (error) { next(error); }
 });
+
+router.post('/:id/custody', requirePermission('cargo.manage'), (req, res, next) => {
+  try {
+    const item = Cargo.getById(req.params.id);
+    if (!item) throw new HttpError(404, 'Cargo not found');
+    ensureExpeditionAccess(req.user, item.expedition_id);
+    requireFields(req.body, 'to_custodian');
+
+    const toCustodian = String(req.body.to_custodian || '').trim();
+    if (!toCustodian) throw new HttpError(400, 'New custodian is required');
+
+    const locationId = req.body.location_id == null
+      ? item.current_location_id
+      : Number(req.body.location_id);
+    ensureEntityInExpedition('locations', locationId, item.expedition_id, 'Location');
+
+    Cargo.update(item.id, {
+      assigned_to: toCustodian,
+      current_location_id: locationId,
+      status: req.body.status || item.status,
+    });
+
+    run(
+      `INSERT INTO cargo_events(
+        cargo_id,location_id,event_type,note,user_id,created_at,
+        from_custodian,to_custodian,custody_action
+      ) VALUES(?,?,?,?,?,?,?,?,?)`,
+      item.id,
+      locationId,
+      'Custody',
+      req.body.note || '',
+      req.user.id,
+      nowIso(),
+      item.assigned_to || '',
+      toCustodian,
+      'Handoff',
+    );
+
+    recordActivity(
+      item.expedition_id,
+      'cargo',
+      'Cargo ' + item.code + ' custody transferred to ' + toCustodian,
+      req.user.id,
+    );
+    recordAudit(req.user, item.expedition_id, 'custody', 'cargo', item.id, req.body);
+    broadcast(
+      item.expedition_id,
+      makeEvent('cargo.custody', item.expedition_id, 'cargo', item.id),
+    );
+    res.json(details(item.id));
+  } catch (error) { next(error); }
+});
+
 router.get('/:id/events', requirePermission('cargo.read'), (req, res, next) => {
   try {
     const item = Cargo.getById(req.params.id);

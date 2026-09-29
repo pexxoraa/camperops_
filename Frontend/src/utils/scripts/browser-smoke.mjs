@@ -225,6 +225,43 @@ await page
   .filter({ hasText: "ANTARCTIC / SOUTH" })
   .waitFor({ timeout: 10000 });
 
+await page.getByRole("link", { name: "Cargo", exact: true }).click();
+await page.getByRole("heading", { name: "Cargo", exact: true }).waitFor();
+await page.getByRole("button", { name: "Scan QR", exact: true }).waitFor();
+const cargoHeaders = await page.locator("table thead").innerText();
+if (!cargoHeaders.includes("Cargo ID") || !cargoHeaders.includes("Custodian")) {
+  throw new Error("Cargo ID/custody columns did not render");
+}
+
+const firstCargoRow = page.locator("tbody tr").first();
+await firstCargoRow
+  .getByRole("button", { name: "Custody", exact: true })
+  .click();
+await page
+  .getByRole("heading", { name: "Transfer cargo custody" })
+  .waitFor({ timeout: 10000 });
+
+const custodyLocationValues = await page
+  .locator(".modal select")
+  .first()
+  .locator("option")
+  .evaluateAll((options) =>
+    options.map((option) => option.value).filter(Boolean),
+  );
+const alphaLocationIds = await page.evaluate(async () => {
+  const token = localStorage.getItem("polarops.session");
+  const response = await fetch("/api/locations?expedition_id=1", {
+    headers: { authorization: "Bearer " + token },
+  });
+  return (await response.json()).map((item) => String(item.id));
+});
+if (custodyLocationValues.some((value) => !alphaLocationIds.includes(value))) {
+  throw new Error(
+    "Cargo custody location selector included a cross-expedition location",
+  );
+}
+await page.locator(".modal-close").click();
+
 const modules = [
   ["Personnel", "Personnel"],
   ["Cargo", "Cargo"],
