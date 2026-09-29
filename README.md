@@ -153,6 +153,16 @@ The current deployment is a synthetic demo environment and includes seeded demo 
 
 Local seed passwords are defined by the demo migrations. Before using PolarOps for non-demo operational data, remove or rotate seeded demo credentials and configure appropriate access controls.
 
+## Research documentation
+
+The research pack is in `docs/research/`:
+
+- `PRE_PROJECT_RESEARCH.md` — retrospective reconstruction of the research and planning that should have existed before implementation, explicitly labeled as reconstructed.
+- `POST_PROJECT_RESEARCH.md` — implementation review, production evidence, responsive/mobile evaluation, limitations, and next research.
+- `docs/research/README.md` — interpretation and document index.
+
+Both reports include direct source links to W3C/WAI, web.dev, MDN, Cloudflare, Leaflet, OpenStreetMap Foundation, COMNAP, the Antarctic Treaty Secretariat, and IAATO.
+
 ## Validation
 
 Backend:

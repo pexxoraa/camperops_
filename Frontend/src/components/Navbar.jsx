@@ -5,7 +5,7 @@ import { useRealtime } from "../context/RealtimeContext";
 import api from "../utils/services/api";
 import { getPolarRegionLabel } from "../utils/polarRegion";
 
-export default function Navbar() {
+export default function Navbar({ onMenuToggle }) {
   const { user, logout } = useAuth();
   const { expeditions, selectedId, selectedExpedition, selectExpedition } =
     useExpedition();
@@ -18,6 +18,7 @@ export default function Navbar() {
       setResults([]);
       return;
     }
+
     const timer = window.setTimeout(async () => {
       try {
         const data = await api.get(
@@ -31,6 +32,7 @@ export default function Navbar() {
         setResults([]);
       }
     }, 220);
+
     return () => window.clearTimeout(timer);
   }, [query, selectedId]);
 
@@ -38,9 +40,19 @@ export default function Navbar() {
 
   return (
     <header className="navbar">
+      <button
+        className="mobile-menu-button"
+        type="button"
+        aria-label="Open navigation"
+        onClick={onMenuToggle}
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
+
       <div className="expedition-picker">
-        <label>Expedition</label>
+        <label htmlFor="expedition-select">Expedition</label>
         <select
+          id="expedition-select"
           value={selectedId || ""}
           onChange={(e) => selectExpedition(e.target.value)}
         >
@@ -52,16 +64,22 @@ export default function Navbar() {
         </select>
         <span className="region-pill">{pole}</span>
       </div>
+
       <div className="global-search">
+        <label className="sr-only" htmlFor="global-search-input">
+          Search PolarOps
+        </label>
         <input
+          id="global-search-input"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search personnel, cargo, incidents…"
+          autoComplete="off"
         />
         {results.length ? (
-          <div className="search-results">
+          <div className="search-results" role="list">
             {results.slice(0, 8).map((item, index) => (
-              <div key={item.kind + "-" + (item.id ?? index)}>
+              <div key={item.kind + "-" + (item.id ?? index)} role="listitem">
                 <strong>{item.title}</strong>
                 <span>
                   {item.kind} · {item.detail || ""}
@@ -71,6 +89,7 @@ export default function Navbar() {
           </div>
         ) : null}
       </div>
+
       <div className="user-tools">
         <span className={connected ? "live-dot connected" : "live-dot"}>
           {connected ? "LIVE" : navigator.onLine ? "HTTP" : "OFFLINE"}
@@ -79,7 +98,7 @@ export default function Navbar() {
           <strong>{user?.name}</strong>
           <span>{user?.role}</span>
         </div>
-        <button className="button ghost" onClick={logout}>
+        <button className="button ghost signout-button" onClick={logout}>
           Sign out
         </button>
       </div>
