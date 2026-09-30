@@ -1,4 +1,4 @@
-# PolarOps Node/React Migration Plan
+# CamperOps Node/React Migration Plan
 
 Date: 2026-09-29
 Branch: `node-react-refactor`

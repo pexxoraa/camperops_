@@ -17,7 +17,7 @@ export default function EmergencyOverlay() {
         <span className="emergency-alert-mark" aria-hidden="true">
           !
         </span>
-        <p className="emergency-alert-kicker">POLAROPS EXPEDITION ALERT</p>
+        <p className="emergency-alert-kicker">CAMPEROPS EXPEDITION ALERT</p>
         <h1 id="emergency-alert-title">EMERGENCY</h1>
         <p
           id="emergency-alert-description"

@@ -15,14 +15,14 @@ function close(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
-test('detects an existing PolarOps backend', async () => {
+test('detects an existing CamperOps backend', async () => {
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ service: 'polarops-backend' }));
+    response.end(JSON.stringify({ service: 'camperops-backend' }));
   });
   const port = await listen(server);
 
-  assert.equal(await detectBackendOnPort(port), 'polarops');
+  assert.equal(await detectBackendOnPort(port), 'camperops');
   await close(server);
 });
 

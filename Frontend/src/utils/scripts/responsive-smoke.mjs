@@ -1,6 +1,6 @@
 import { chromium } from "playwright-core";
 
-const base = process.env.POLAROPS_BASE_URL || "http://127.0.0.1:5174";
+const base = process.env.CAMPEROPS_BASE_URL || "http://127.0.0.1:5174";
 const routes = [
   "/dashboard",
   "/personnel",

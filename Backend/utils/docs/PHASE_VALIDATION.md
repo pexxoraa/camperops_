@@ -1,7 +1,7 @@
-# PolarOps Node/React Refactor — Phase Validation
+# CamperOps Node/React Refactor — Phase Validation
 
 Branch: `node-react-refactor`  
-Working copy: `~/polarops-react`  
+Working copy: `~/camperops-react`
 Deployment status: **not deployed**
 
 ## Phase 0 — Audit

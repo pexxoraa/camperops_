@@ -1,4 +1,4 @@
-name: Deploy PolarOps to Cloudflare
+name: Deploy CamperOps to Cloudflare
 
 on:
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
           fi
 
       - name: Apply D1 migrations
-        run: npx wrangler d1 migrations apply polarops-db --remote
+        run: npx wrangler d1 migrations apply camperops-db --remote
 
       - name: Deploy Python Worker
         run: uv run pywrangler deploy

@@ -1,4 +1,4 @@
-const CACHE = 'polarops-react-shell-v1'
+const CACHE = 'camperops-react-shell-v1'
 const SHELL = ['/', '/index.html']
 
 self.addEventListener('install', (event) => {

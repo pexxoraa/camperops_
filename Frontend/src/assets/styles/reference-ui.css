@@ -1,4 +1,4 @@
-/* PolarOps Reference UI v3 — light command-center visual system */
+/* CamperOps Reference UI v3 — light command-center visual system */
 :root {
   --ref-navy: #082e4f;
   --ref-navy2: #0b3a62;
@@ -1775,7 +1775,7 @@ body.map-fullscreen-open {
   color: #0874d5 !important;
 }
 
-/* PolarOps command features */
+/* CamperOps command features */
 .sidebar .nav {
   overflow-y: auto;
   min-height: 0;

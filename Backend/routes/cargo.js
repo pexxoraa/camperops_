@@ -28,7 +28,7 @@ function parseCargoScan(value, expectedExpeditionId) {
     throw new HttpError(400, 'Cargo ID or QR value is required');
   }
 
-  const match = raw.match(/^POLAROPS:CARGO:(\d+):(.+)$/i);
+  const match = raw.match(/^CAMPEROPS:CARGO:(\d+):(.+)$/i);
   if (!match) return raw.toUpperCase();
 
   const scannedExpeditionId = Number(match[1]);
@@ -44,7 +44,7 @@ function parseCargoScan(value, expectedExpeditionId) {
 const details = (id) =>
   get(
     `SELECT c.*,
-      ('POLAROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
+      ('CAMPEROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
       o.name origin_name,
       d.name destination_name,
       l.name location_name
@@ -68,7 +68,7 @@ router.get(
       res.json(
         await all(
           `SELECT c.*,
-            ('POLAROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
+            ('CAMPEROPS:CARGO:' || c.expedition_id || ':' || c.code) qr_value,
             o.name origin_name,
             d.name destination_name,
             l.name location_name

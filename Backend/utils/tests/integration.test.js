@@ -41,8 +41,8 @@ test('HTTP auth, tenant isolation, CRUD, routes and search preserve core behavio
     await new Promise((resolve)=>fixture.server.close(resolve));
     fixture.db.close();
   });
-  const commander=await login(fixture.base,'commander@polarops.local','PolarOps123!');
-  const field=await login(fixture.base,'field@polarops.local','Field123!');
+  const commander=await login(fixture.base,'commander@camperops.local','CamperOps123!');
+  const field=await login(fixture.base,'field@camperops.local','Field123!');
 
   let response=await api(fixture.base,commander.token,'/api/bootstrap');
   const bootstrap=await response.json();
@@ -110,7 +110,7 @@ test('realtime websocket requires authorized ticket and session token', async (t
     await new Promise((resolve)=>fixture.server.close(resolve));
     fixture.db.close();
   });
-  const commander=await login(fixture.base,'commander@polarops.local','PolarOps123!');
+  const commander=await login(fixture.base,'commander@camperops.local','CamperOps123!');
   const response=await api(fixture.base,commander.token,'/api/realtime/ticket?expedition_id=1');
   assert.equal(response.status,200);
   const {ticket}=await response.json();
@@ -140,8 +140,8 @@ test('cargo IDs, QR lookup and custody history remain linked', async (t) => {
 
   const commander = await login(
     fixture.base,
-    'commander@polarops.local',
-    'PolarOps123!',
+    'commander@camperops.local',
+    'CamperOps123!',
   )
 
   let response = await api(fixture.base, commander.token, '/api/locations', {
@@ -170,7 +170,7 @@ test('cargo IDs, QR lookup and custody history remain linked', async (t) => {
   assert.equal(response.status, 201)
   const cargo = await response.json()
   assert.equal(cargo.code, 'QR-IT-001')
-  assert.equal(cargo.qr_value, 'POLAROPS:CARGO:1:QR-IT-001')
+  assert.equal(cargo.qr_value, 'CAMPEROPS:CARGO:1:QR-IT-001')
 
   response = await api(
     fixture.base,

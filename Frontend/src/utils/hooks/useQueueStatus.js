@@ -11,12 +11,12 @@ export function useQueueStatus(){
     const onOffline=()=>setOnline(false);
     window.addEventListener('online',onOnline);
     window.addEventListener('offline',onOffline);
-    window.addEventListener('polarops:queue-change',refresh);
+    window.addEventListener('camperops:queue-change',refresh);
     refresh();
     return()=>{
       window.removeEventListener('online',onOnline);
       window.removeEventListener('offline',onOffline);
-      window.removeEventListener('polarops:queue-change',refresh);
+      window.removeEventListener('camperops:queue-change',refresh);
     };
   },[refresh]);
 

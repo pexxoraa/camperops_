@@ -19,12 +19,12 @@ export default function Modal({
         className={"modal " + (wide ? "wide" : "")}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="polarops-modal-title"
+        aria-labelledby="camperops-modal-title"
       >
         <div className="modal-head">
           <div>
-            <span className="eyebrow">POLAROPS WORKFLOW</span>
-            <h2 id="polarops-modal-title">{title}</h2>
+            <span className="eyebrow">CAMPEROPS WORKFLOW</span>
+            <h2 id="camperops-modal-title">{title}</h2>
             {subtitle ? <p>{subtitle}</p> : null}
           </div>
           <button

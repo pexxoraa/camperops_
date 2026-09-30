@@ -1,7 +1,7 @@
 export const env = {
   port: Number(process.env.PORT || 5000),
   databaseUrl:
-    process.env.DATABASE_URL || './data/polarops.sqlite',
+    process.env.DATABASE_URL || './data/camperops.sqlite',
   authSecret: process.env.AUTH_SECRET || '',
   weatherApiUrl:
     process.env.WEATHER_API_URL ||

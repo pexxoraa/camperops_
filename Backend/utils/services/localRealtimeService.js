@@ -46,7 +46,7 @@ export function configureRealtime(server) {
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        ws.polaropsAuthenticated = false;
+        ws.camperopsAuthenticated = false;
         localRoom(expeditionId).add(ws);
 
         ws.on('message', (buffer) => {
@@ -61,7 +61,7 @@ export function configureRealtime(server) {
                 ws.close(4401, 'Unauthorized');
                 return;
               }
-              ws.polaropsAuthenticated = true;
+              ws.camperopsAuthenticated = true;
               ws.send(
                 JSON.stringify({
                   type: 'auth.ok',

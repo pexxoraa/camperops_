@@ -12,9 +12,9 @@ let server;
 async function startBackend() {
   const portState = await detectBackendOnPort(env.port, host);
 
-  if (portState === 'polarops') {
+  if (portState === 'camperops') {
     console.log(
-      `PolarOps backend is already running on http://${host}:${env.port}`,
+      `CamperOps backend is already running on http://${host}:${env.port}`,
     );
     return;
   }
@@ -36,15 +36,15 @@ async function startBackend() {
 
   server.on('error', async (error) => {
     if (error.code !== 'EADDRINUSE') {
-      console.error('PolarOps backend failed to start:', error);
+      console.error('CamperOps backend failed to start:', error);
       process.exitCode = 1;
       return;
     }
 
     const state = await detectBackendOnPort(env.port, host);
-    if (state === 'polarops') {
+    if (state === 'camperops') {
       console.log(
-        `PolarOps backend is already running on http://${host}:${env.port}`,
+        `CamperOps backend is already running on http://${host}:${env.port}`,
       );
       return;
     }
@@ -58,7 +58,7 @@ async function startBackend() {
 
   server.listen(env.port, host, () => {
     console.log(
-      `PolarOps backend listening on http://${host}:${env.port}`,
+      `CamperOps backend listening on http://${host}:${env.port}`,
     );
   });
 }

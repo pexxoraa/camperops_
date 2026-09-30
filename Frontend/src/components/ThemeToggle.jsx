@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 export default function ThemeToggle() {
   const [darkMode, setDarkMode] = useState(() => {
     try {
-      return window.localStorage.getItem("polarops-theme") === "dark";
+      return window.localStorage.getItem("camperops-theme") === "dark";
     } catch {
       return false;
     }
@@ -13,7 +13,7 @@ export default function ThemeToggle() {
     document.body.classList.toggle("dark", darkMode);
     try {
       window.localStorage.setItem(
-        "polarops-theme",
+        "camperops-theme",
         darkMode ? "dark" : "light",
       );
     } catch {

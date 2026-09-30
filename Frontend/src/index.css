@@ -496,7 +496,7 @@ body {
   }
 }
 
-/* PolarOps platform logo */
+/* CamperOps platform logo */
 .sidebar .brand.platform-brand {
   flex-direction: column;
   align-items: flex-start;
@@ -521,13 +521,22 @@ body {
   );
 }
 
-.platform-logo {
+.platform-logo-mark {
   display: block;
-  width: 100%;
-  height: auto;
-  filter: brightness(1.35) saturate(1.12) contrast(1.08)
-    drop-shadow(0 0 12px rgba(74, 190, 255, 0.28))
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 12px rgba(74, 190, 255, 0.32))
     drop-shadow(0 2px 8px rgba(0, 0, 0, 0.38));
+}
+
+.platform-logo-word {
+  color: #f2f9ff;
+  font-size: 20px;
+  font-weight: 850;
+  letter-spacing: -0.35px;
+  line-height: 1;
 }
 
 .sidebar .brand.platform-brand small {
@@ -550,10 +559,28 @@ body {
   backdrop-filter: none;
 }
 
+.login-brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .login-platform-logo {
   display: block;
-  width: 100%;
-  height: auto;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 54px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 18px rgba(82, 197, 255, 0.3));
+}
+
+.login-brand-lockup strong {
+  color: #f4fbff;
+  font-size: clamp(30px, 4vw, 46px);
+  font-weight: 850;
+  letter-spacing: -1.2px;
+  line-height: 1;
+  text-shadow: 0 2px 14px rgba(0, 24, 42, 0.5);
 }
 
 .login-logo-plate > span {

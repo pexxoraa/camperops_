@@ -53,8 +53,8 @@ const ANTARCTIC_SCENES = [
 
 export default function Login() {
   const { user, login } = useAuth();
-  const [email, setEmail] = useState("commander@polarops.local");
-  const [password, setPassword] = useState("PolarOps123!");
+  const [email, setEmail] = useState("commander@camperops.local");
+  const [password, setPassword] = useState("CamperOps123!");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [scene, setScene] = useState(0);
@@ -95,14 +95,21 @@ export default function Login() {
           />
         ))}
       </div>
-      <section className="login-visual" aria-label="PolarOps platform overview">
+      <section
+        className="login-visual"
+        aria-label="CamperOps platform overview"
+      >
         <div className="login-brand">
           <div className="login-logo-plate">
-            <img
-              className="login-platform-logo"
-              src="/media/polarops-logo.webp"
-              alt="PolarOps"
-            />
+            <div className="login-brand-lockup" aria-label="CamperOps">
+              <img
+                className="login-platform-logo"
+                src="/camperops-favicon.png"
+                alt=""
+                aria-hidden="true"
+              />
+              <strong>CamperOps</strong>
+            </div>
             <span>Expedition command platform</span>
           </div>
         </div>

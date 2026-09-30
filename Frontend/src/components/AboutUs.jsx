@@ -56,9 +56,9 @@ export default function AboutUs() {
     <section>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">ABOUT POLAROPS</span>
+          <span className="eyebrow">ABOUT CAMPEROPS</span>
           <h1>About Our Team</h1>
-          <p>Meet the people behind PolarOps.</p>
+          <p>Meet the people behind CamperOps.</p>
         </div>
       </div>
       <div className="about-team-grid">

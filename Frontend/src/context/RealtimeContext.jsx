@@ -18,7 +18,7 @@ const RealtimeContext = createContext({
 });
 
 const DEFAULT_REALTIME_BASE = import.meta.env.PROD
-  ? "https://polarops-api.pexxoraa.workers.dev"
+  ? "https://camperops-api.pexxoraa.workers.dev"
   : "";
 const REALTIME_BASE = (
   import.meta.env.VITE_REALTIME_BASE || DEFAULT_REALTIME_BASE

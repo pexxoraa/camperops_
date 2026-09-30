@@ -116,7 +116,7 @@ router.get(
 
       res.setHeader(
         'Content-Disposition',
-        'attachment; filename="polarops-backup.json"',
+        'attachment; filename="camperops-backup.json"',
       );
       res.json(payload);
     } catch (error) {

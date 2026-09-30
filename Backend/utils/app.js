@@ -30,7 +30,7 @@ function corsOrigin(origin, callback) {
     /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(origin);
   const configured = env.frontendOrigin && origin === env.frontendOrigin;
   const pagesPreview =
-    /^https:\/\/[a-z0-9-]+\.polarops\.pages\.dev$/i.test(origin);
+    /^https:\/\/[a-z0-9-]+\.camperops\.pages\.dev$/i.test(origin);
 
   callback(null, Boolean(local || configured || pagesPreview));
 }

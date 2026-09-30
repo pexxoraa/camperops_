@@ -30,8 +30,8 @@ export function detectBackendOnPort(
           try {
             const payload = JSON.parse(body);
             finish(
-              payload?.service === 'polarops-backend'
-                ? 'polarops'
+              payload?.service === 'camperops-backend'
+                ? 'camperops'
                 : 'occupied',
             );
           } catch {

@@ -156,7 +156,7 @@ export default function Cargo() {
 
   async function copyQrValue(row) {
     const value =
-      row.qr_value || "POLAROPS:CARGO:" + row.expedition_id + ":" + row.code;
+      row.qr_value || "CAMPEROPS:CARGO:" + row.expedition_id + ":" + row.code;
     try {
       await navigator.clipboard.writeText(value);
     } catch {
@@ -244,7 +244,7 @@ export default function Cargo() {
       <Modal
         open={scanOpen}
         title="Scan cargo QR"
-        subtitle="Scan a PolarOps cargo QR or enter the Cargo ID manually."
+        subtitle="Scan a CamperOps cargo QR or enter the Cargo ID manually."
         onClose={() => {
           setScanOpen(false);
           setScanError("");

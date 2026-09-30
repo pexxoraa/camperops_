@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 
-const base = process.env.POLAROPS_WORKER_URL || 'http://127.0.0.1:8787';
+const base = process.env.CAMPEROPS_WORKER_URL || 'http://127.0.0.1:8787';
 
 const healthResponse = await fetch(base + '/api/health');
 assert.equal(healthResponse.status, 200);
@@ -14,8 +14,8 @@ const loginResponse = await fetch(base + '/api/auth/login', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({
-    email: 'commander@polarops.local',
-    password: 'PolarOps123!',
+    email: 'commander@camperops.local',
+    password: 'CamperOps123!',
   }),
 });
 assert.equal(loginResponse.status, 200);
@@ -27,7 +27,7 @@ const bootstrapResponse = await fetch(base + '/api/bootstrap', {
 });
 assert.equal(bootstrapResponse.status, 200);
 const bootstrap = await bootstrapResponse.json();
-assert.equal(bootstrap.user.email, 'commander@polarops.local');
+assert.equal(bootstrap.user.email, 'commander@camperops.local');
 assert.equal(bootstrap.expeditions.length, 2);
 
 const ticketResponse = await fetch(

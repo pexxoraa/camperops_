@@ -1,12 +1,12 @@
 import { chromium } from "playwright-core";
 
-const baseUrl = process.env.POLAROPS_BASE_URL || "http://127.0.0.1:5173";
-const checkOffline = process.env.POLAROPS_CHECK_OFFLINE === "1";
+const baseUrl = process.env.CAMPEROPS_BASE_URL || "http://127.0.0.1:5173";
+const checkOffline = process.env.CAMPEROPS_CHECK_OFFLINE === "1";
 const appOrigin = new URL(baseUrl).origin;
 const apiOrigin =
-  process.env.POLAROPS_API_URL ||
+  process.env.CAMPEROPS_API_URL ||
   (new URL(baseUrl).hostname.endsWith(".pages.dev")
-    ? "https://polarops-api.pexxoraa.workers.dev"
+    ? "https://camperops-api.pexxoraa.workers.dev"
     : appOrigin);
 let offlinePhase = false;
 
@@ -72,7 +72,7 @@ await page
   .waitFor({ timeout: 10000 });
 
 const apiChecks = await page.evaluate(async (apiOrigin) => {
-  const token = localStorage.getItem("polarops.session");
+  const token = localStorage.getItem("camperops.session");
   const paths = [
     "/api/personnel?expedition_id=1",
     "/api/cargo?expedition_id=1",
@@ -108,8 +108,8 @@ if (failedApi.length)
 
 const roleChecks = await page.evaluate(async (apiOrigin) => {
   const accounts = [
-    ["logistics@polarops.local", "Logistics123!", "logistics"],
-    ["field@polarops.local", "Field123!", "field"],
+    ["logistics@camperops.local", "Logistics123!", "logistics"],
+    ["field@camperops.local", "Field123!", "field"],
   ];
   return Promise.all(
     accounts.map(async ([email, password, role]) => {
@@ -299,7 +299,7 @@ const custodyLocationValues = await page
     options.map((option) => option.value).filter(Boolean),
   );
 const alphaLocationIds = await page.evaluate(async (apiOrigin) => {
-  const token = localStorage.getItem("polarops.session");
+  const token = localStorage.getItem("camperops.session");
   const response = await fetch(apiOrigin + "/api/locations?expedition_id=1", {
     headers: { authorization: "Bearer " + token },
   });
@@ -349,7 +349,7 @@ if (checkOffline) {
   );
   await page.waitForTimeout(1000);
   const cacheUrls = await page.evaluate(async () =>
-    (await (await caches.open("polarops-react-shell-v1")).keys()).map(
+    (await (await caches.open("camperops-react-shell-v1")).keys()).map(
       (request) => request.url,
     ),
   );

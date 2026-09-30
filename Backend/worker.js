@@ -86,15 +86,15 @@ async function handleRealtime(request, bindings) {
   const room = bindings.EXPEDITION_ROOM.get(objectId);
   const headers = new Headers(request.headers);
   headers.set(
-    'x-polarops-expedition-id',
+    'x-camperops-expedition-id',
     String(expeditionId),
   );
   headers.set(
-    'x-polarops-user-id',
+    'x-camperops-user-id',
     String(user.id),
   );
   headers.set(
-    'x-polarops-organization-id',
+    'x-camperops-organization-id',
     String(user.organization_id),
   );
 

@@ -5,10 +5,10 @@ import { decodeToken, makeRealtimeTicket, makeToken, verifyPassword } from '../s
 
 test('demo password hashes remain compatible with Node PBKDF2', async () => {
   const db = await createDatabase(':memory:');
-  const commander = db.prepare('SELECT * FROM users WHERE email=?').get('commander@polarops.local');
-  const logistics = db.prepare('SELECT * FROM users WHERE email=?').get('logistics@polarops.local');
-  const field = db.prepare('SELECT * FROM users WHERE email=?').get('field@polarops.local');
-  assert.equal(verifyPassword('PolarOps123!', commander.password_hash), true);
+  const commander = db.prepare('SELECT * FROM users WHERE email=?').get('commander@camperops.local');
+  const logistics = db.prepare('SELECT * FROM users WHERE email=?').get('logistics@camperops.local');
+  const field = db.prepare('SELECT * FROM users WHERE email=?').get('field@camperops.local');
+  assert.equal(verifyPassword('CamperOps123!', commander.password_hash), true);
   assert.equal(verifyPassword('Logistics123!', logistics.password_hash), true);
   assert.equal(verifyPassword('Field123!', field.password_hash), true);
   db.close();

@@ -1,4 +1,4 @@
-# PolarOps Node/React Conversion Audit
+# CamperOps Node/React Conversion Audit
 
 Date: 2026-09-29
 Branch: `node-react-refactor`
@@ -7,7 +7,7 @@ Scope: local clone only. No production resources were accessed or modified.
 
 ## Executive summary
 
-The current PolarOps implementation is a Cloudflare-native modular monolith. FastAPI/Python Workers, Cloudflare D1, one Durable Object WebSocket room per expedition, a vanilla-JavaScript PWA, Leaflet maps, public polar reference data, and optional external environmental feeds are combined into a same-origin application.
+The current CamperOps implementation is a Cloudflare-native modular monolith. FastAPI/Python Workers, Cloudflare D1, one Durable Object WebSocket room per expedition, a vanilla-JavaScript PWA, Leaflet maps, public polar reference data, and optional external environmental feeds are combined into a same-origin application.
 
 The conversion can preserve the existing relational model with a local SQLite database because D1 uses SQLite semantics and the migrations are standard SQLite-compatible SQL. MongoDB would introduce unnecessary data-model drift. The local Node target therefore uses Node 26's built-in `node:sqlite`.
 
@@ -30,7 +30,7 @@ The frontend is a static PWA under `public/`.
 
 - `public/static/app.js` owns session state, API calls, offline queue/cache, websocket lifecycle, SPA-style section switching, most page rendering, forms, telemetry helpers, and Leaflet mission/network maps.
 - `public/static/ops-features.js` owns operations board, routes/zones, alerts, science, communications, readiness, global search, audit, incident-command enhancements, SITREP, and shift handover.
-- `public/static/app.css` and `public/static/reference-ui.css` implement the blue/navy/white PolarOps visual system.
+- `public/static/app.css` and `public/static/reference-ui.css` implement the blue/navy/white CamperOps visual system.
 - `public/service-worker.js` caches the application shell while bypassing API/WebSocket traffic and third-party map tiles.
 - Leaflet 1.9.4 is vendored in `public/vendor/leaflet/`.
 
@@ -226,7 +226,7 @@ Confirmed from endpoints, migrations, and frontend wiring:
 - Leaflet-based interactive maps and fullscreen support.
 - PWA/offline behavior and mutation replay.
 - Realtime as secondary delivery, not source of truth.
-- Current PolarOps visual identity.
+- Current CamperOps visual identity.
 - Fast, no-refresh section navigation.
 - Route/geofence form readability.
 

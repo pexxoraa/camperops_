@@ -10,7 +10,7 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     try {
       await navigator.serviceWorker.register('/service-worker.js')
       await navigator.serviceWorker.ready
-      const cache = await caches.open('polarops-react-shell-v1')
+      const cache = await caches.open('camperops-react-shell-v1')
       const urls = new Set(['/', '/index.html'])
       for (const item of performance.getEntriesByType('resource')) {
         const url = new URL(item.name)

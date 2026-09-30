@@ -25,7 +25,7 @@ import AboutUs from './components/AboutUs.jsx';
 
 function Protected(){
   const {user,loading}=useAuth();
-  if(loading)return <Loading label="Loading local PolarOps session…"/>;
+  if(loading)return <Loading label="Loading local CamperOps session…"/>;
   if(!user)return <Navigate to="/login" replace/>;
   return <ExpeditionProvider><RealtimeProvider><Outlet/></RealtimeProvider></ExpeditionProvider>;
 }

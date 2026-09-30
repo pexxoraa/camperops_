@@ -38,7 +38,7 @@ export async function broadcast(expeditionId, event) {
     const objectId = expeditionRoomNamespace.idFromName(String(id));
     const stub = expeditionRoomNamespace.get(objectId);
     const response = await stub.fetch(
-      new Request('https://polarops-room.internal/broadcast', {
+      new Request('https://camperops-room.internal/broadcast', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(event),
@@ -54,7 +54,7 @@ export async function broadcast(expeditionId, event) {
   for (const socket of localRoom(id)) {
     if (
       socket.readyState === 1 &&
-      socket.polaropsAuthenticated
+      socket.camperopsAuthenticated
     ) {
       socket.send(payload);
       sent += 1;

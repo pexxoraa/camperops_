@@ -38,7 +38,7 @@ export default function CargoQrScanner({ onValue }) {
         videoNode = video;
         video.srcObject = stream;
         await video.play();
-        setStatus("Point the camera at a PolarOps cargo QR code.");
+        setStatus("Point the camera at a CamperOps cargo QR code.");
 
         const detect = async () => {
           if (stopped || !videoRef.current) return;

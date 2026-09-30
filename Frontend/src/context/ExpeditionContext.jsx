@@ -3,7 +3,7 @@ import api from '../utils/services/api'
 import { useAuth } from './AuthContext'
 
 const ExpeditionContext = createContext(null)
-const KEY = 'polarops-selected-expedition'
+const KEY = 'camperops-selected-expedition'
 
 export function ExpeditionProvider({ children }) {
   const { user } = useAuth()

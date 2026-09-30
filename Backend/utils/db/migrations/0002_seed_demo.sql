@@ -1,10 +1,10 @@
 INSERT OR IGNORE INTO organizations(id,name,country_code,operator_type,created_at)
-VALUES(1,'PolarOps Demo Programme','XX','National Antarctic Programme','2026-09-28T00:00:00+00:00');
+VALUES(1,'CamperOps Demo Programme','XX','National Antarctic Programme','2026-09-28T00:00:00+00:00');
 
 INSERT OR IGNORE INTO users(id,organization_id,email,name,role,password_hash,active,created_at) VALUES
-(1,1,'commander@polarops.local','Expedition Commander','commander','pbkdf2_sha256$100000$cG9sYXJvcHMtY29tbWFuZGVy$9_2IqXpM2XAhYSX27LmJhX6jnxhkr7YgRhuG6R5Ap9k=',1,'2026-09-28T00:00:00+00:00'),
-(2,1,'logistics@polarops.local','Logistics Officer','logistics','pbkdf2_sha256$100000$cG9sYXJvcHMtbG9naXN0aWNz$Zox1Y31lgtZ8rcC8tAN4nyVwX9EiqAXk3Q6k3U5sKZ0=',1,'2026-09-28T00:00:00+00:00'),
-(3,1,'field@polarops.local','Field Team Leader','field','pbkdf2_sha256$100000$cG9sYXJvcHMtZmllbGQ=$uBGb5BkKjiPFQTb3i-HzuDmilPeLsD6FrGc2nCBlyos=',1,'2026-09-28T00:00:00+00:00');
+(1,1,'commander@camperops.local','Expedition Commander','commander','pbkdf2_sha256$100000$Y2FtcGVyb3BzLWNvbW1hbmRlcg$1zKkbfK_3IrRAG3OE5Nmij8_-aY1BMCGasEQO02Vbzs',1,'2026-09-28T00:00:00+00:00'),
+(2,1,'logistics@camperops.local','Logistics Officer','logistics','pbkdf2_sha256$100000$Y2FtcGVyb3BzLWxvZ2lzdGljcw$C_0Mscgej7lttLGM5_LJJ9Uyf8uORp-UafidLNqx7g4',1,'2026-09-28T00:00:00+00:00'),
+(3,1,'field@camperops.local','Field Team Leader','field','pbkdf2_sha256$100000$Y2FtcGVyb3BzLWZpZWxk$5OTq1dLaueGZ13FyplUjzt9G6-tT4aJqNH-ER8VZNq0',1,'2026-09-28T00:00:00+00:00');
 
 INSERT OR IGNORE INTO expeditions(id,organization_id,name,region,start_date,end_date,status,description,created_at)
 VALUES(1,1,'Expedition Alpha','Antarctic Region','2026-12-12','2027-01-15','Active','Integrated polar research and logistics mission.','2026-09-28T00:00:00+00:00');

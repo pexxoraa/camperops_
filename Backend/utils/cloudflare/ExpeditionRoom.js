@@ -48,13 +48,13 @@ export class ExpeditionRoom extends DurableObject {
     }
 
     const expeditionId = Number(
-      request.headers.get('x-polarops-expedition-id'),
+      request.headers.get('x-camperops-expedition-id'),
     );
     const userId = Number(
-      request.headers.get('x-polarops-user-id'),
+      request.headers.get('x-camperops-user-id'),
     );
     const organizationId = Number(
-      request.headers.get('x-polarops-organization-id'),
+      request.headers.get('x-camperops-organization-id'),
     );
 
     if (

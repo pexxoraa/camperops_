@@ -1,4 +1,4 @@
-const DB_NAME='polarops-react-offline';
+const DB_NAME='camperops-react-offline';
 const DB_VERSION=1;
 
 function openDb(){

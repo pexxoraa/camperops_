@@ -1,10 +1,10 @@
 -- Cloudflare Web Crypto limits PBKDF2 iterations to 100000.
 -- Re-hash the three bundled demo accounts at that supported work factor.
-UPDATE users SET password_hash='pbkdf2_sha256$100000$cG9sYXJvcHMtY29tbWFuZGVy$9_2IqXpM2XAhYSX27LmJhX6jnxhkr7YgRhuG6R5Ap9k='
-WHERE email='commander@polarops.local';
+UPDATE users SET password_hash='pbkdf2_sha256$100000$Y2FtcGVyb3BzLWNvbW1hbmRlcg$1zKkbfK_3IrRAG3OE5Nmij8_-aY1BMCGasEQO02Vbzs'
+WHERE email='commander@camperops.local';
 
-UPDATE users SET password_hash='pbkdf2_sha256$100000$cG9sYXJvcHMtbG9naXN0aWNz$Zox1Y31lgtZ8rcC8tAN4nyVwX9EiqAXk3Q6k3U5sKZ0='
-WHERE email='logistics@polarops.local';
+UPDATE users SET password_hash='pbkdf2_sha256$100000$Y2FtcGVyb3BzLWxvZ2lzdGljcw$C_0Mscgej7lttLGM5_LJJ9Uyf8uORp-UafidLNqx7g4'
+WHERE email='logistics@camperops.local';
 
-UPDATE users SET password_hash='pbkdf2_sha256$100000$cG9sYXJvcHMtZmllbGQ=$uBGb5BkKjiPFQTb3i-HzuDmilPeLsD6FrGc2nCBlyos='
-WHERE email='field@polarops.local';
+UPDATE users SET password_hash='pbkdf2_sha256$100000$Y2FtcGVyb3BzLWZpZWxk$5OTq1dLaueGZ13FyplUjzt9G6-tT4aJqNH-ER8VZNq0'
+WHERE email='field@camperops.local';

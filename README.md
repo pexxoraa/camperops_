@@ -1,6 +1,6 @@
-# PolarOps
+# CamperOps
 
-PolarOps is an expedition command platform with a React/Vite frontend and a JavaScript Express API. The same backend code supports local Node.js development and Cloudflare Workers production.
+CamperOps is an expedition command platform with a React/Vite frontend and a JavaScript Express API. The same backend code supports local Node.js development and Cloudflare Workers production.
 
 ## Architecture
 
@@ -24,14 +24,14 @@ PolarOps is an expedition command platform with a React/Vite frontend and a Java
 
 Current deployment:
 
-- Frontend: https://polarops.pages.dev
-- API/Realtime Worker: https://polarops-api.pexxoraa.workers.dev
-- D1 database: `polarops-db`
+- Frontend: https://camperops.pages.dev
+- API/Realtime Worker: https://camperops-api.pexxoraa.workers.dev
+- D1 database: `camperops-db`
 
 ## Project structure
 
 ```text
-polarops-react/
+camperops-react/
 ├── Backend/
 │   ├── models/
 │   ├── routes/
@@ -139,7 +139,7 @@ Deploy Pages:
 ```bash
 cd ../Backend
 npx wrangler pages deploy ../Frontend/dist \
-  --project-name polarops \
+  --project-name camperops \
   --branch main
 ```
 
@@ -147,11 +147,11 @@ npx wrangler pages deploy ../Frontend/dist \
 
 The current deployment is a synthetic demo environment and includes seeded demo users:
 
-- Commander: `commander@polarops.local`
-- Logistics: `logistics@polarops.local`
-- Field: `field@polarops.local`
+- Commander: `commander@camperops.local`
+- Logistics: `logistics@camperops.local`
+- Field: `field@camperops.local`
 
-Local seed passwords are defined by the demo migrations. Before using PolarOps for non-demo operational data, remove or rotate seeded demo credentials and configure appropriate access controls.
+Local seed passwords are defined by the demo migrations. Before using CamperOps for non-demo operational data, remove or rotate seeded demo credentials and configure appropriate access controls.
 
 ## Research documentation
 

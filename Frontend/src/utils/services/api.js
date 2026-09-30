@@ -1,10 +1,10 @@
 import { cacheGet,cacheSet,deleteQueued,enqueueMutation,listQueued,queueCount,updateQueued } from './offline.js';
 
 const DEFAULT_API_BASE = import.meta.env.PROD
-  ? 'https://polarops-api.pexxoraa.workers.dev/api'
+  ? 'https://camperops-api.pexxoraa.workers.dev/api'
   : '/api';
 const API_BASE = import.meta.env.VITE_API_BASE || DEFAULT_API_BASE;
-const TOKEN_KEY='polarops.session';
+const TOKEN_KEY='camperops.session';
 const normalizePath=(path)=>path.startsWith('/api/')?path.slice(4):(path==='/api'?'':path);
 
 export const storedToken=()=>localStorage.getItem(TOKEN_KEY)||'';
@@ -31,7 +31,7 @@ async function direct(path,{method='GET',body,headers={},signal}={}){
   if(!response.ok){
     const error=new Error(payload?.error||payload?.detail||('HTTP '+response.status));
     error.status=response.status;error.payload=payload;
-    if(response.status===401){window.dispatchEvent(new Event('polarops:auth-expired'));window.dispatchEvent(new Event('polarops:unauthorized'));}
+    if(response.status===401){window.dispatchEvent(new Event('camperops:auth-expired'));window.dispatchEvent(new Event('camperops:unauthorized'));}
     throw error;
   }
   return payload;
@@ -57,7 +57,7 @@ export async function apiRequest(path,options={}){
   const queuedBody=options.body===undefined?undefined:typeof options.body==='string'?options.body:JSON.stringify(options.body);
   if(queueable&&typeof navigator!=='undefined'&&!navigator.onLine){
     const id=await enqueueMutation({path,method,body:queuedBody,headers:options.headers||{}});
-    window.dispatchEvent(new Event('polarops:queue-change'));
+    window.dispatchEvent(new Event('camperops:queue-change'));
     return {queued:true,offline:true,queue_id:id};
   }
   try{
@@ -66,7 +66,7 @@ export async function apiRequest(path,options={}){
   }catch(error){
     if(queueable&&!error.status){
       const id=await enqueueMutation({path,method,body:queuedBody,headers:options.headers||{}});
-      window.dispatchEvent(new Event('polarops:queue-change'));
+      window.dispatchEvent(new Event('camperops:queue-change'));
       return {queued:true,offline:true,queue_id:id};
     }
     throw error;
@@ -88,7 +88,7 @@ export async function flushMutationQueue(){
       if(error.status===401)break;
     }
   }
-  window.dispatchEvent(new Event('polarops:queue-change'));
+  window.dispatchEvent(new Event('camperops:queue-change'));
   return queueCount();
 }
 

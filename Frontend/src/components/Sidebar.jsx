@@ -48,10 +48,12 @@ export default function Sidebar({ open = false, onClose }) {
       >
         <span className="platform-logo-plate">
           <img
-            className="platform-logo"
-            src="/media/polarops-logo.webp"
-            alt="PolarOps"
+            className="platform-logo-mark"
+            src="/camperops-favicon.png"
+            alt=""
+            aria-hidden="true"
           />
+          <strong className="platform-logo-word">CamperOps</strong>
         </span>
         <small>EXPEDITION COMMAND</small>
       </Link>
@@ -75,7 +77,9 @@ export default function Sidebar({ open = false, onClose }) {
         to="/about-us"
         onClick={onClose}
         className={({ isActive }) =>
-          isActive ? "nav-link sidebar-about-link active" : "nav-link sidebar-about-link"
+          isActive
+            ? "nav-link sidebar-about-link active"
+            : "nav-link sidebar-about-link"
         }
       >
         About Us

@@ -1,4 +1,4 @@
--- PolarOps operational command feature set: timeline, routes/geofences, alerts,
+-- CamperOps operational command feature set: timeline, routes/geofences, alerts,
 -- science records, communications, readiness, incident command, handover and audit.
 
 CREATE TABLE IF NOT EXISTS mission_tasks (

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import api, { getAuthToken, setAuthToken } from '../utils/services/api'
 
 const AuthContext = createContext(null)
-const USER_KEY = 'polarops.user'
+const USER_KEY = 'camperops.user'
 
 function storedUser() {
   try { return JSON.parse(localStorage.getItem(USER_KEY) || 'null') } catch { return null }
@@ -43,8 +43,8 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     refresh()
-    window.addEventListener('polarops:unauthorized', logout)
-    return () => window.removeEventListener('polarops:unauthorized', logout)
+    window.addEventListener('camperops:unauthorized', logout)
+    return () => window.removeEventListener('camperops:unauthorized', logout)
   }, [refresh, logout])
 
   const login = useCallback(async (email, password) => {

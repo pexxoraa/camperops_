@@ -10,7 +10,7 @@ router.get('/', async (req, res, next) => {
   try {
     res.json({
       ok: true,
-      service: 'polarops-backend',
+      service: 'camperops-backend',
       database: usingD1() ? 'd1' : 'sqlite',
       migrations: await migrationCount(),
       time: new Date().toISOString(),
