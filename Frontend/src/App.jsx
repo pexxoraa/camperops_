@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter,Navigate,Outlet,Route,Routes } from 'react-router-dom';
 import { AuthProvider,useAuth } from './context/AuthContext.jsx';
 import { ExpeditionProvider } from './context/ExpeditionContext.jsx';
@@ -5,23 +6,23 @@ import { RealtimeProvider } from './context/RealtimeContext.jsx';
 import Layout from './components/Layout.jsx';
 import Loading from './components/Loading.jsx';
 import Login from './components/Login.jsx';
-import Dashboard from './components/Dashboard.jsx';
-import Personnel from './components/Personnel.jsx';
-import Cargo from './components/Cargo.jsx';
-import Inventory from './components/Inventory.jsx';
-import Vehicles from './components/Vehicles.jsx';
-import Assets from './components/Assets.jsx';
-import RoutesPage from './components/Routes.jsx';
-import Incidents from './components/Incidents.jsx';
-import Operations from './components/Operations.jsx';
-import Science from './components/Science.jsx';
-import Communications from './components/Communications.jsx';
-import Readiness from './components/Readiness.jsx';
-import Environment from './components/Environment.jsx';
-import PolarNetwork from './components/PolarNetwork.jsx';
-import Activity from './components/Activity.jsx';
-import Settings from './components/Settings.jsx';
-import AboutUs from './components/AboutUs.jsx';
+const Dashboard = lazy(() => import('./components/Dashboard.jsx'));
+const Personnel = lazy(() => import('./components/Personnel.jsx'));
+const Cargo = lazy(() => import('./components/Cargo.jsx'));
+const Inventory = lazy(() => import('./components/Inventory.jsx'));
+const Vehicles = lazy(() => import('./components/Vehicles.jsx'));
+const Assets = lazy(() => import('./components/Assets.jsx'));
+const RoutesPage = lazy(() => import('./components/Routes.jsx'));
+const Incidents = lazy(() => import('./components/Incidents.jsx'));
+const Operations = lazy(() => import('./components/Operations.jsx'));
+const Science = lazy(() => import('./components/Science.jsx'));
+const Communications = lazy(() => import('./components/Communications.jsx'));
+const Readiness = lazy(() => import('./components/Readiness.jsx'));
+const Environment = lazy(() => import('./components/Environment.jsx'));
+const PolarNetwork = lazy(() => import('./components/PolarNetwork.jsx'));
+const Activity = lazy(() => import('./components/Activity.jsx'));
+const Settings = lazy(() => import('./components/Settings.jsx'));
+const AboutUs = lazy(() => import('./components/AboutUs.jsx'));
 
 function Protected(){
   const {user,loading}=useAuth();
@@ -35,6 +36,7 @@ export default function App(){
     <Route path="/login" element={<Login/>}/>
     <Route element={<Protected/>}>
       <Route element={<Layout/>}>
+        <Route element={<Suspense fallback={<Loading label="Loading page…"/>}><Outlet/></Suspense>}>
         <Route index element={<Navigate to="/dashboard" replace/>}/>
         <Route path="/dashboard" element={<Dashboard/>}/>
         <Route path="/personnel" element={<Personnel/>}/>
@@ -53,6 +55,7 @@ export default function App(){
         <Route path="/activity" element={<Activity/>}/>
         <Route path="/settings" element={<Settings/>}/>
         <Route path="/about-us" element={<AboutUs/>}/>
+        </Route>
       </Route>
     </Route>
     <Route path="*" element={<Navigate to="/dashboard" replace/>}/>
