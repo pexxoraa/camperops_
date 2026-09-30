@@ -21,6 +21,7 @@ import Environment from './components/Environment.jsx';
 import PolarNetwork from './components/PolarNetwork.jsx';
 import Activity from './components/Activity.jsx';
 import Settings from './components/Settings.jsx';
+import AboutUs from './components/AboutUs.jsx';
 
 function Protected(){
   const {user,loading}=useAuth();
@@ -51,6 +52,7 @@ export default function App(){
         <Route path="/network" element={<PolarNetwork/>}/>
         <Route path="/activity" element={<Activity/>}/>
         <Route path="/settings" element={<Settings/>}/>
+        <Route path="/about-us" element={<AboutUs/>}/>
       </Route>
     </Route>
     <Route path="*" element={<Navigate to="/dashboard" replace/>}/>

@@ -4,6 +4,7 @@ import api from '../utils/services/api'
 export default function Communications() {
   return <ResourcePage
     title="Communications"
+    createLabel="Schedule Check-in"
     description="VHF, HF, satellite and Iridium check-ins with overdue status tracking."
     endpoint="/api/ops/comms"
     columns={[

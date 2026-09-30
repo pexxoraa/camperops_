@@ -12,6 +12,7 @@ const INCIDENT_TYPES = [
   "Safety",
   "Environmental",
 ];
+const INCIDENT_SEVERITIES = ["Critical", "High", "Medium", "Low"];
 
 export default function Incidents() {
   const [action, setAction] = useState(null);
@@ -26,7 +27,13 @@ export default function Incidents() {
     setBusy(true);
     setError("");
     try {
-      if (action.kind === "update") {
+      if (action.kind === "details") {
+        await api.patch("/api/incidents/" + action.row.id, {
+          type: form.type,
+          severity: form.severity,
+          note: form.note,
+        });
+      } else if (action.kind === "timeline") {
         await api.post("/api/incidents/" + action.row.id + "/events", {
           event_type: form.event_type || "Update",
           note: form.note,
@@ -47,37 +54,63 @@ export default function Incidents() {
   }
 
   const actionFields =
-    action?.kind === "update"
+    action?.kind === "details"
       ? [
           {
-            name: "event_type",
-            label: "Update type",
+            name: "type",
+            label: "Incident type",
             type: "select",
-            options: ["Update", "Command", "Medical", "Logistics", "Safety"],
+            options: INCIDENT_TYPES,
             placeholder: false,
+            required: true,
+          },
+          {
+            name: "severity",
+            label: "Severity",
+            type: "select",
+            options: INCIDENT_SEVERITIES,
+            placeholder: false,
+            required: true,
           },
           {
             name: "note",
-            label: "Timeline note",
+            label: "Update note",
             type: "textarea",
-            required: true,
             wide: true,
           },
         ]
-      : [
-          {
-            name: "note",
-            label: "Resolution note",
-            type: "textarea",
-            required: true,
-            wide: true,
-          },
-        ];
+      : action?.kind === "timeline"
+        ? [
+            {
+              name: "event_type",
+              label: "Update type",
+              type: "select",
+              options: ["Update", "Command", "Medical", "Logistics", "Safety"],
+              placeholder: false,
+            },
+            {
+              name: "note",
+              label: "Timeline note",
+              type: "textarea",
+              required: true,
+              wide: true,
+            },
+          ]
+        : [
+            {
+              name: "note",
+              label: "Resolution note",
+              type: "textarea",
+              required: true,
+              wide: true,
+            },
+          ];
 
   return (
     <>
       <ResourcePage
         title="Incidents"
+        createLabel="Report Incident"
         description="SOS, incident command, timeline events, response actions, assignment and completion."
         endpoint="/api/incidents"
         columns={[
@@ -101,7 +134,7 @@ export default function Incidents() {
             name: "severity",
             label: "Severity",
             type: "select",
-            options: ["Critical", "High", "Medium", "Low"],
+            options: INCIDENT_SEVERITIES,
           },
           {
             name: "description",
@@ -115,12 +148,22 @@ export default function Incidents() {
             <button
               className="button small"
               onClick={() => {
-                setAction({ kind: "update", row, refresh });
-                setForm({ event_type: "Update", note: "" });
+                setAction({ kind: "details", row, refresh });
+                setForm({ type: row.type, severity: row.severity, note: "" });
                 setError("");
               }}
             >
               Update
+            </button>
+            <button
+              className="button small ghost"
+              onClick={() => {
+                setAction({ kind: "timeline", row, refresh });
+                setForm({ event_type: "Update", note: "" });
+                setError("");
+              }}
+            >
+              Timeline
             </button>
             {row.status !== "Resolved" ? (
               <button
@@ -137,12 +180,15 @@ export default function Incidents() {
           </div>
         )}
       />
+
       <ActionFormModal
         open={Boolean(action)}
         title={
           action?.kind === "resolve"
             ? "Resolve incident"
-            : "Add timeline update"
+            : action?.kind === "timeline"
+              ? "Add incident timeline update"
+              : "Update incident"
         }
         subtitle={action?.row ? action.row.code + " · " + action.row.title : ""}
         fields={actionFields}
@@ -151,7 +197,11 @@ export default function Incidents() {
         onClose={() => setAction(null)}
         onSubmit={submitAction}
         submitLabel={
-          action?.kind === "resolve" ? "Resolve incident" : "Add update"
+          action?.kind === "resolve"
+            ? "Resolve incident"
+            : action?.kind === "timeline"
+              ? "Add update"
+              : "Save update"
         }
         busy={busy}
         error={error}

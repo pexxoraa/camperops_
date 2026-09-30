@@ -36,6 +36,8 @@ export default function Inventory() {
     <>
       <ResourcePage
         title="Inventory"
+        createLabel="Add Stock item"
+        enableUpdate
         description="Stock levels, minimum safety thresholds, low-stock warnings and adjustments."
         endpoint="/api/inventory"
         columns={[

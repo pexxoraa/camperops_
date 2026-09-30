@@ -18,6 +18,7 @@ const routes = [
   "/network",
   "/activity",
   "/settings",
+  "/about-us",
 ];
 
 const viewports = [
@@ -65,6 +66,18 @@ for (const viewport of viewports) {
       timeout: 30000,
     });
     await page.locator(".page-heading h1").waitFor({ timeout: 10000 });
+
+    if (route === "/dashboard") {
+      await page
+        .getByRole("heading", { name: "Expedition map", exact: true })
+        .waitFor({ timeout: 10000 });
+      const mapBox = await page
+        .locator(".dashboard-map-panel .polar-map")
+        .boundingBox();
+      if (!mapBox || Math.abs(mapBox.width - mapBox.height) > 2) {
+        throw new Error(viewport.name + " dashboard map should remain square");
+      }
+    }
 
     const result = await page.evaluate(() => {
       const viewportWidth = document.documentElement.clientWidth;
@@ -141,11 +154,13 @@ if (await page.locator(".sidebar.mobile-open").count()) {
 
 await page.goto(base + "/personnel", { waitUntil: "domcontentloaded" });
 await page.locator(".table-wrap tbody tr").first().waitFor({ timeout: 10000 });
-const tableMode = await page
+const tableModes = await page
   .locator(".table-wrap thead")
-  .evaluate((element) => getComputedStyle(element).display);
-if (tableMode !== "none") {
-  throw new Error("Mobile data table did not switch to card mode");
+  .evaluateAll((elements) =>
+    elements.map((element) => getComputedStyle(element).display),
+  );
+if (!tableModes.length || tableModes.some((mode) => mode !== "none")) {
+  throw new Error("Mobile data tables did not switch to card mode");
 }
 
 await browser.close();

@@ -1,7 +1,13 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useExpedition } from "../context/ExpeditionContext";
+import { useRealtime } from "../context/RealtimeContext";
 import api from "../utils/services/api";
 import ActionFormModal from "./ActionFormModal";
-import ResourcePage from "./ResourcePage";
+import Alert from "./Alert";
+import DataTable from "./DataTable";
+import Loading from "./Loading";
+import Modal from "./Modal";
 
 const CHECKIN_STATUSES = [
   "Safe",
@@ -11,89 +17,171 @@ const CHECKIN_STATUSES = [
   "Overdue",
 ];
 
+const PERSONNEL_ROLES = [
+  "Expedition Lead",
+  "Communications",
+  "Medical Officer",
+  "Scientist",
+  "Field Engineer",
+  "Geologist",
+  "Glaciologist",
+  "Logistics Technician",
+];
+
+const EMPTY_TEAM_FORM = {
+  team: "",
+  name: "",
+  role: "",
+  status: "Safe",
+};
+const EMPTY_MEMBER_FORM = { name: "", role: "", status: "Safe" };
+const normalizeTeam = (team) =>
+  String(team || "")
+    .trim()
+    .toLocaleLowerCase();
+
 export default function Personnel() {
-  const [checkin, setCheckin] = useState(null);
-  const [form, setForm] = useState({ status: "Safe" });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { selectedId } = useExpedition();
+  const { revision } = useRealtime();
+  const [personnel, setPersonnel] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [teamDialogOpen, setTeamDialogOpen] = useState(false);
+  const [teamForm, setTeamForm] = useState(EMPTY_TEAM_FORM);
+  const [teamError, setTeamError] = useState("");
+  const [memberAction, setMemberAction] = useState(null);
+  const [memberForm, setMemberForm] = useState(EMPTY_MEMBER_FORM);
+  const [memberError, setMemberError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [focusedPerson, setFocusedPerson] = useState(null);
+  const focusId =
+    searchParams.get("kind") === "personnel" ? searchParams.get("focus") : null;
 
-  async function submitCheckin(event) {
-    event.preventDefault();
-    if (!checkin) return;
-
-    setBusy(true);
+  const refresh = useCallback(async () => {
+    if (!selectedId) return;
+    setLoading(true);
     setError("");
     try {
-      await api.post("/api/personnel/" + checkin.row.id + "/checkin", {
-        status: form.status,
+      setPersonnel(await api.get("/api/personnel?expedition_id=" + selectedId));
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh, revision]);
+
+  useEffect(() => {
+    if (!focusId || !personnel.length) return;
+    const match = personnel.find((member) => String(member.id) === focusId);
+    if (match) setFocusedPerson(match);
+  }, [focusId, personnel]);
+
+  const teams = useMemo(() => {
+    const grouped = new Map();
+    personnel.forEach((member) => {
+      const name = String(member.team || "").trim() || "Unassigned";
+      const key = normalizeTeam(name) || "unassigned";
+      if (!grouped.has(key)) {
+        grouped.set(key, { key, name, members: [] });
+      }
+      grouped.get(key).members.push(member);
+    });
+    return [...grouped.values()].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+  }, [personnel]);
+
+  function closeFocusedPerson() {
+    setFocusedPerson(null);
+    setSearchParams(
+      (current) => {
+        current.delete("focus");
+        current.delete("kind");
+        return current;
+      },
+      { replace: true },
+    );
+  }
+
+  async function submitTeam(event) {
+    event.preventDefault();
+    setBusy(true);
+    setTeamError("");
+    try {
+      await api.post("/api/personnel", {
+        expedition_id: selectedId,
+        ...teamForm,
       });
-      await checkin.refresh();
-      setCheckin(null);
-    } catch (err) {
-      setError(err.message);
+      setTeamDialogOpen(false);
+      setTeamForm(EMPTY_TEAM_FORM);
+      await refresh();
+    } catch (requestError) {
+      setTeamError(requestError.message);
     } finally {
       setBusy(false);
     }
   }
 
-  return (
-    <>
-      <ResourcePage
-        title="Personnel"
-        description="Roster, team roles, status, check-ins and last known operational position."
-        endpoint="/api/personnel"
-        columns={[
-          { key: "name", label: "Name" },
-          { key: "role", label: "Role" },
-          { key: "team", label: "Team" },
-          { key: "status", label: "Status", badge: true },
-          { key: "location_name", label: "Location" },
-          { key: "last_checkin", label: "Last check-in" },
-        ]}
-        createFields={[
-          { name: "name", label: "Name", required: true },
-          {
-            name: "role",
-            label: "Role",
-            type: "select",
-            required: true,
-            options: [
-              "Expedition Lead",
-              "Communications",
-              "Medical Officer",
-              "Scientist",
-              "Field Engineer",
-              "Geologist",
-              "Glaciologist",
-              "Logistics Technician",
-            ],
-          },
-          { name: "team", label: "Team" },
-          {
-            name: "status",
-            label: "Status",
-            type: "select",
-            options: CHECKIN_STATUSES,
-          },
-        ]}
-        actions={(row, refresh) => (
-          <button
-            className="button small"
-            onClick={() => {
-              setCheckin({ row, refresh });
-              setForm({ status: row.status || "Safe" });
-              setError("");
-            }}
-          >
-            Check in
-          </button>
-        )}
-      />
-      <ActionFormModal
-        open={Boolean(checkin)}
-        title="Personnel check-in"
-        subtitle={checkin?.row?.name || ""}
-        fields={[
+  function openAddMember(team) {
+    setMemberAction({ kind: "add", team });
+    setMemberForm(EMPTY_MEMBER_FORM);
+    setMemberError("");
+  }
+
+  function openUpdateMember(member) {
+    setMemberAction({ kind: "update", member });
+    setMemberForm({
+      name: member.name || "",
+      role: member.role || "",
+      team: member.team || "",
+      status: member.status || "Safe",
+    });
+    setMemberError("");
+  }
+
+  function openCheckin(member) {
+    setMemberAction({ kind: "checkin", member });
+    setMemberForm({ status: member.status || "Safe" });
+    setMemberError("");
+  }
+
+  async function submitMemberAction(event) {
+    event.preventDefault();
+    if (!memberAction) return;
+    setBusy(true);
+    setMemberError("");
+    try {
+      if (memberAction.kind === "add") {
+        await api.post("/api/personnel", {
+          expedition_id: selectedId,
+          ...memberForm,
+          team: memberAction.team,
+        });
+      } else if (memberAction.kind === "update") {
+        await api.patch("/api/personnel/" + memberAction.member.id, memberForm);
+      } else {
+        await api.post(
+          "/api/personnel/" + memberAction.member.id + "/checkin",
+          { status: memberForm.status },
+        );
+      }
+      setMemberAction(null);
+      await refresh();
+    } catch (requestError) {
+      setMemberError(requestError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const memberFields =
+    memberAction?.kind === "checkin"
+      ? [
           {
             name: "status",
             label: "Check-in status",
@@ -102,15 +190,203 @@ export default function Personnel() {
             placeholder: false,
             required: true,
           },
+        ]
+      : [
+          { name: "name", label: "Name", required: true },
+          {
+            name: "role",
+            label: "Role",
+            type: "select",
+            options: [
+              ...new Set([...PERSONNEL_ROLES, memberForm.role].filter(Boolean)),
+            ],
+            required: true,
+            placeholder: false,
+          },
+          ...(memberAction?.kind === "update"
+            ? [{ name: "team", label: "Team", required: true }]
+            : []),
+          {
+            name: "status",
+            label: "Status",
+            type: "select",
+            options: CHECKIN_STATUSES,
+            placeholder: false,
+          },
+        ];
+
+  const memberActionTitle =
+    memberAction?.kind === "add"
+      ? "Add personnel to " + memberAction.team
+      : memberAction?.kind === "checkin"
+        ? "Personnel check-in"
+        : "Update personnel";
+
+  if (loading) return <Loading />;
+
+  return (
+    <section>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">EXPEDITION MODULE</span>
+          <h1>Personnel</h1>
+          <p>
+            Roster, team roles, status, check-ins and last known operational
+            position.
+          </p>
+        </div>
+      </div>
+      {error ? <Alert tone="danger">{error}</Alert> : null}
+
+      <div className="panel personnel-teams-container">
+        <div className="panel-title personnel-teams-heading">
+          <div>
+            <h2>Teams</h2>
+            <span>
+              {teams.length} teams · {personnel.length} teammates
+            </span>
+          </div>
+          <button
+            className="button primary"
+            onClick={() => {
+              setTeamForm(EMPTY_TEAM_FORM);
+              setTeamError("");
+              setTeamDialogOpen(true);
+            }}
+          >
+            + Add Team
+          </button>
+        </div>
+
+        {teams.length ? (
+          <div className="personnel-team-grid">
+            {teams.map((team) => (
+              <section className="panel personnel-team-card" key={team.key}>
+                <div className="panel-title personnel-team-heading">
+                  <div>
+                    <h2>{team.name}</h2>
+                    <span>{team.members.length} teammates</span>
+                  </div>
+                  <button
+                    className="button small primary"
+                    onClick={() => openAddMember(team.name)}
+                  >
+                    + Add Personnel
+                  </button>
+                </div>
+                <div className="personnel-team-roster">
+                  <DataTable
+                    rows={team.members}
+                    columns={[
+                      { key: "name", label: "Name" },
+                      { key: "role", label: "Role" },
+                      { key: "status", label: "Status", badge: true },
+                      { key: "location_name", label: "Location" },
+                      { key: "last_checkin", label: "Last check-in" },
+                    ]}
+                    actions={(member) => (
+                      <div className="inline-actions">
+                        <button
+                          className="button small"
+                          onClick={() => openUpdateMember(member)}
+                        >
+                          Update
+                        </button>
+                        <button
+                          className="button small"
+                          onClick={() => openCheckin(member)}
+                        >
+                          Check in
+                        </button>
+                      </div>
+                    )}
+                  />
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="empty">
+            <div>
+              <strong>No teams yet</strong>
+              <span>Add a team with its first teammate to get started.</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <ActionFormModal
+        open={teamDialogOpen}
+        title="Add team and first teammate"
+        fields={[
+          { name: "team", label: "Team name", required: true },
+          { name: "name", label: "First teammate name", required: true },
+          {
+            name: "role",
+            label: "Role",
+            type: "select",
+            options: PERSONNEL_ROLES,
+            required: true,
+            placeholder: false,
+          },
+          {
+            name: "status",
+            label: "Status",
+            type: "select",
+            options: CHECKIN_STATUSES,
+            placeholder: false,
+          },
         ]}
-        form={form}
-        setForm={setForm}
-        onClose={() => setCheckin(null)}
-        onSubmit={submitCheckin}
-        submitLabel="Record check-in"
+        form={teamForm}
+        setForm={setTeamForm}
+        onClose={() => setTeamDialogOpen(false)}
+        onSubmit={submitTeam}
+        submitLabel="Create team"
         busy={busy}
-        error={error}
+        error={teamError}
       />
-    </>
+
+      <ActionFormModal
+        open={Boolean(memberAction)}
+        title={memberActionTitle}
+        subtitle={memberAction?.member?.name || ""}
+        fields={memberFields}
+        form={memberForm}
+        setForm={setMemberForm}
+        onClose={() => setMemberAction(null)}
+        onSubmit={submitMemberAction}
+        submitLabel={
+          memberAction?.kind === "checkin"
+            ? "Record check-in"
+            : memberAction?.kind === "add"
+              ? "Add personnel"
+              : "Save changes"
+        }
+        busy={busy}
+        error={memberError}
+      />
+
+      <Modal
+        open={Boolean(focusedPerson)}
+        title="Personnel details"
+        subtitle={focusedPerson?.name || ""}
+        onClose={closeFocusedPerson}
+        wide
+      >
+        <dl className="record-details">
+          {Object.entries(focusedPerson || {})
+            .filter(
+              ([, value]) =>
+                value !== null && value !== undefined && value !== "",
+            )
+            .map(([key, value]) => (
+              <div key={key}>
+                <dt>{key.replaceAll("_", " ")}</dt>
+                <dd>{String(value)}</dd>
+              </div>
+            ))}
+        </dl>
+      </Modal>
+    </section>
   );
 }

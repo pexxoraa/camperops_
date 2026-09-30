@@ -9,9 +9,8 @@ router.use(authRequired);
 router.get('/workers/status',requirePermission('operations.read'),(req,res)=>{
   res.json({
     configured:Boolean(env.operationsFeedUrl),
-    url:env.operationsFeedUrl||null,
     status:env.operationsFeedUrl?'configured':'not configured',
-    note:'Local development never contacts a worker feed unless OPERATIONS_FEED_URL is explicitly set.',
+    note:'The operations feed URL is never returned to clients.',
   });
 });
 
@@ -21,8 +20,7 @@ router.post('/workers/sync',requirePermission('operations.manage'),(req,res)=>{
     return;
   }
   res.status(501).json({
-    error:'Automatic worker-feed writes are disabled in the local refactor until the provider schema is explicitly authorized.',
-    configured_url:env.operationsFeedUrl,
+    error:'Automatic worker-feed writes are disabled until the provider schema is explicitly authorized.',
   });
 });
 

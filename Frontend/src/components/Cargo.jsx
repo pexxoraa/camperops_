@@ -177,6 +177,8 @@ export default function Cargo() {
     <>
       <ResourcePage
         title="Cargo"
+        createLabel="Register Cargo"
+        enableUpdate
         description="Track Cargo IDs, QR lookup, custody handoffs, movement state and chain-of-custody history."
         endpoint="/api/cargo"
         headerActions={
