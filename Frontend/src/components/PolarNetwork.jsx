@@ -70,7 +70,27 @@ export default function PolarNetwork() {
           ? "COMNAP bundled reference snapshot · November 2024 · reference data, not a live operations feed."
           : "Arctic research-station reference records retain verification/source metadata and are not presented as live operations."}
       </div>
-      <PolarMap region={mode} markers={markers} viewKey={mode} />
+      <div className="panel polar-network-map-panel">
+        <div className="panel-title polar-network-map-title">
+          <div>
+            <h2>
+              {mode === "south"
+                ? "Antarctic network map"
+                : "Arctic network map"}
+            </h2>
+            <span>
+              {markers.length} reference stations · select a marker for details
+            </span>
+          </div>
+        </div>
+        <PolarMap
+          region={mode}
+          markers={markers}
+          viewKey={"network-" + mode}
+          height={560}
+          legendPlacement="footer"
+        />
+      </div>
       <div className="panel">
         <DataTable
           rows={rows}

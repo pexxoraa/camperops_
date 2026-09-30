@@ -2086,3 +2086,146 @@ body.dark .table-wrap tr {
     min-height: 44px;
   }
 }
+
+/* UX refinements: dashboard alerts, dark route forms, Polar Network map */
+.dashboard-alert-control .button {
+  border: 1px solid #0b7ce5;
+  background: #0b7ce5;
+  color: #fff;
+  box-shadow: none;
+}
+
+.dashboard-alert-control .button:not(:disabled):hover {
+  background: #096dcc;
+  border-color: #096dcc;
+}
+
+.dashboard-alert-control .button:disabled {
+  opacity: 1;
+  border-color: #cbd7e0;
+  background: #e8eef3;
+  color: #748899;
+}
+
+body.dark .dashboard-alert-control .button {
+  border-color: #278ee9;
+  background: #1679cf;
+  color: #fff;
+}
+
+body.dark .dashboard-alert-control .button:not(:disabled):hover {
+  background: #2188df;
+  border-color: #2188df;
+}
+
+body.dark .dashboard-alert-control .button:disabled {
+  border-color: #344a58;
+  background: #172630;
+  color: #78909f;
+}
+
+body.dark .route-form {
+  background: #1b2a35 !important;
+  color: #e4edf2;
+  border-color: #344956;
+}
+
+body.dark .route-form .panel-title h2 {
+  color: #f1f6f9;
+}
+
+body.dark .route-form .panel-title span,
+body.dark .route-form .form-grid > label > span {
+  color: #b8c9d3;
+}
+
+body.dark .route-form .form-grid input,
+body.dark .route-form .form-grid select,
+body.dark .route-form .form-grid textarea {
+  border-color: #425967;
+  background: #14232d;
+  color: #eef5f8;
+}
+
+body.dark .route-form .form-grid input::placeholder,
+body.dark .route-form .form-grid textarea::placeholder {
+  color: #7f95a3;
+}
+
+body.dark .reference-banner {
+  border-color: #345064;
+  background: #182a37;
+  color: #c8dae6;
+}
+
+body.dark .segmented {
+  border-color: #425967;
+  background: #14232d;
+}
+
+body.dark .segmented button {
+  color: #b9cbd6;
+}
+
+body.dark .segmented button.active {
+  background: #0b7ce5;
+  color: #fff;
+}
+
+.polar-network-map-panel {
+  margin-bottom: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.polar-network-map-title {
+  align-items: flex-start;
+  margin-bottom: 9px;
+}
+
+.polar-network-map-title > div {
+  min-width: 0;
+}
+
+.polar-network-map-title h2 {
+  margin-bottom: 3px;
+}
+
+.polar-network-map-title span {
+  display: block;
+}
+
+.polar-network-map-panel .polar-map {
+  height: min(var(--polar-map-height, 560px), 58vh);
+  min-height: 380px;
+}
+
+.polar-network-map-panel .polar-map-legend--footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+@media (max-width: 900px) {
+  .polar-network-map-panel .polar-map {
+    height: min(var(--polar-map-height, 520px), 50vh);
+    min-height: 330px;
+  }
+}
+
+@media (max-width: 680px) {
+  .polar-network-map-panel {
+    padding: 8px;
+  }
+
+  .polar-network-map-panel .polar-map {
+    height: min(var(--polar-map-height, 430px), 46vh);
+    min-height: 280px;
+  }
+
+  .polar-network-map-panel .polar-map-legend--footer {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
