@@ -3,6 +3,11 @@ import { chromium } from "playwright-core";
 const baseUrl = process.env.POLAROPS_BASE_URL || "http://127.0.0.1:5173";
 const checkOffline = process.env.POLAROPS_CHECK_OFFLINE === "1";
 const appOrigin = new URL(baseUrl).origin;
+const apiOrigin =
+  process.env.POLAROPS_API_URL ||
+  (new URL(baseUrl).hostname.endsWith(".pages.dev")
+    ? "https://polarops-api.pexxoraa.workers.dev"
+    : appOrigin);
 let offlinePhase = false;
 
 const browser = await chromium.launch({
@@ -66,7 +71,7 @@ await page
   .filter({ hasText: "LIVE" })
   .waitFor({ timeout: 10000 });
 
-const apiChecks = await page.evaluate(async () => {
+const apiChecks = await page.evaluate(async (apiOrigin) => {
   const token = localStorage.getItem("polarops.session");
   const paths = [
     "/api/personnel?expedition_id=1",
@@ -89,23 +94,26 @@ const apiChecks = await page.evaluate(async () => {
   return Promise.all(
     paths.map(async (path) => [
       path,
-      (await fetch(path, { headers: { authorization: "Bearer " + token } }))
-        .status,
+      (
+        await fetch(apiOrigin + path, {
+          headers: { authorization: "Bearer " + token },
+        })
+      ).status,
     ]),
   );
-});
+}, apiOrigin);
 const failedApi = apiChecks.filter(([, status]) => status !== 200);
 if (failedApi.length)
   throw new Error("API smoke failures: " + JSON.stringify(failedApi));
 
-const roleChecks = await page.evaluate(async () => {
+const roleChecks = await page.evaluate(async (apiOrigin) => {
   const accounts = [
     ["logistics@polarops.local", "Logistics123!", "logistics"],
     ["field@polarops.local", "Field123!", "field"],
   ];
   return Promise.all(
     accounts.map(async ([email, password, role]) => {
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(apiOrigin + "/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -114,7 +122,7 @@ const roleChecks = await page.evaluate(async () => {
       return [role, response.status, data.user?.role];
     }),
   );
-});
+}, apiOrigin);
 if (
   roleChecks.some(
     ([expected, status, actual]) => status !== 200 || expected !== actual,
@@ -290,13 +298,13 @@ const custodyLocationValues = await page
   .evaluateAll((options) =>
     options.map((option) => option.value).filter(Boolean),
   );
-const alphaLocationIds = await page.evaluate(async () => {
+const alphaLocationIds = await page.evaluate(async (apiOrigin) => {
   const token = localStorage.getItem("polarops.session");
-  const response = await fetch("/api/locations?expedition_id=1", {
+  const response = await fetch(apiOrigin + "/api/locations?expedition_id=1", {
     headers: { authorization: "Bearer " + token },
   });
   return (await response.json()).map((item) => String(item.id));
-});
+}, apiOrigin);
 if (custodyLocationValues.some((value) => !alphaLocationIds.includes(value))) {
   throw new Error(
     "Cargo custody location selector included a cross-expedition location",
