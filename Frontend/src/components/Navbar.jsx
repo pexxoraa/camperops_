@@ -1,25 +1,46 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useExpedition } from "../context/ExpeditionContext";
 import { useRealtime } from "../context/RealtimeContext";
 import api from "../utils/services/api";
 import { getPolarRegionLabel } from "../utils/polarRegion";
+import ThemeToggle from "./ThemeToggle";
 
 export default function Navbar({ onMenuToggle }) {
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { expeditions, selectedId, selectedExpedition, selectExpedition } =
     useExpedition();
   const { connected } = useRealtime();
+  const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
+  const [activeResult, setActiveResult] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const markOnline = () => setNetworkOnline(true);
+    const markOffline = () => setNetworkOnline(false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+    return () => {
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedId || query.trim().length < 2) {
       setResults([]);
-      return;
+      setSearching(false);
+      return undefined;
     }
 
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
+      setSearching(true);
       try {
         const data = await api.get(
           "/api/ops/search?expedition_id=" +
@@ -27,16 +48,80 @@ export default function Navbar({ onMenuToggle }) {
             "&q=" +
             encodeURIComponent(query.trim()),
         );
-        setResults(data.items || []);
+        if (!cancelled) setResults(data.items || []);
       } catch {
-        setResults([]);
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
       }
     }, 220);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [query, selectedId]);
 
+  function openResult(item) {
+    const destinations = {
+      personnel: "/personnel",
+      cargo: "/cargo",
+      inventory: "/inventory",
+      vehicle: "/vehicles",
+      asset: "/assets",
+      incident: "/incidents",
+      task: "/operations",
+      route: "/routes",
+      science: "/science",
+      facility: "/routes",
+      arctic_station: "/routes",
+    };
+    const destination = destinations[item.kind];
+    if (!destination) return;
+
+    navigate(
+      destination +
+        "?focus=" +
+        encodeURIComponent(item.id) +
+        "&kind=" +
+        encodeURIComponent(item.kind),
+    );
+    setQuery("");
+    setResults([]);
+    setSearchOpen(false);
+    setActiveResult(0);
+  }
+
+  function handleSearchKeyDown(event) {
+    if (event.key === "Escape") {
+      setSearchOpen(false);
+      return;
+    }
+    if (!results.length) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveResult((index) => (index + 1) % results.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveResult((index) => (index - 1 + results.length) % results.length);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      openResult(results[activeResult] || results[0]);
+    }
+  }
+
   const pole = getPolarRegionLabel(selectedExpedition?.region);
+  const connectionStatus = !networkOnline
+    ? "OFFLINE"
+    : connected
+      ? "LIVE"
+      : "HTTP";
+  const connectionMessage = !networkOnline
+    ? "The browser is offline. Cached information may remain available and queued changes will wait for connectivity."
+    : connected
+      ? "Online with realtime expedition updates connected."
+      : "Online over HTTP while realtime updates reconnect.";
 
   return (
     <header className="navbar">
@@ -54,7 +139,7 @@ export default function Navbar({ onMenuToggle }) {
         <select
           id="expedition-select"
           value={selectedId || ""}
-          onChange={(e) => selectExpedition(e.target.value)}
+          onChange={(event) => selectExpedition(event.target.value)}
         >
           {expeditions.map((item) => (
             <option key={item.id} value={item.id}>
@@ -67,32 +152,84 @@ export default function Navbar({ onMenuToggle }) {
 
       <div className="global-search">
         <label className="sr-only" htmlFor="global-search-input">
-          Search PolarOps
+          Search expedition records
         </label>
         <input
           id="global-search-input"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setResults([]);
+            setActiveResult(0);
+            setSearchOpen(true);
+          }}
+          onFocus={() => setSearchOpen(true)}
+          onBlur={() => setSearchOpen(false)}
+          onKeyDown={handleSearchKeyDown}
+          role="combobox"
+          aria-expanded={searchOpen && query.trim().length >= 2}
+          aria-controls="global-search-results"
+          aria-autocomplete="list"
           placeholder="Search personnel, cargo, incidents…"
           autoComplete="off"
         />
-        {results.length ? (
-          <div className="search-results" role="list">
+        {searchOpen && query.trim().length >= 2 ? (
+          <div
+            className="search-results"
+            id="global-search-results"
+            role="listbox"
+          >
             {results.slice(0, 8).map((item, index) => (
-              <div key={item.kind + "-" + (item.id ?? index)} role="listitem">
+              <button
+                key={item.kind + "-" + (item.id ?? index)}
+                type="button"
+                role="option"
+                aria-selected={activeResult === index}
+                className={activeResult === index ? "active" : ""}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveResult(index)}
+                onClick={() => openResult(item)}
+              >
                 <strong>{item.title}</strong>
                 <span>
                   {item.kind} · {item.detail || ""}
                 </span>
-              </div>
+              </button>
             ))}
+            {!results.length ? (
+              <div className="search-empty">
+                {searching ? "Searching…" : "No matching records"}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
 
       <div className="user-tools">
-        <span className={connected ? "live-dot connected" : "live-dot"}>
-          {connected ? "LIVE" : navigator.onLine ? "HTTP" : "OFFLINE"}
+        <ThemeToggle />
+        <span className="live-status-wrap">
+          <button
+            type="button"
+            className={
+              "live-dot " +
+              (connectionStatus === "LIVE"
+                ? "connected"
+                : connectionStatus === "OFFLINE"
+                  ? "offline"
+                  : "http")
+            }
+            aria-label={"Connection status: " + connectionStatus}
+            aria-describedby="connection-status-tooltip"
+          >
+            {connectionStatus}
+          </button>
+          <span
+            id="connection-status-tooltip"
+            className="live-tooltip"
+            role="tooltip"
+          >
+            {connectionMessage}
+          </span>
         </span>
         <div className="user-copy">
           <strong>{user?.name}</strong>

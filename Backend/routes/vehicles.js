@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { all, get } from '../utils/config/database.js';
+import Alert from '../models/Alert.js';
 import Vehicle from '../models/Vehicle.js';
 import { authRequired } from '../utils/middleware/auth.js';
 import { requirePermission } from '../utils/middleware/permissions.js';
@@ -22,9 +23,31 @@ import {
 const router = Router();
 router.use(authRequired);
 
+const VEHICLE_ISSUE_TYPES = [
+  'Vehicle Breakdown',
+  'Out of Fuel',
+  'Technical Issue',
+  'Mechanical Issue',
+  'Natural Disaster',
+  'Other',
+];
+
+const vehicleAlerts = (vehicleId) =>
+  all(
+    `SELECT * FROM ops_alerts
+     WHERE entity_type='vehicle' AND entity_id=?
+     ORDER BY created_at DESC,id DESC`,
+    Number(vehicleId),
+  );
+
 const details = (id) =>
   get(
-    `SELECT v.*,l.name location_name
+    `SELECT v.*,l.name location_name,
+       (SELECT COUNT(*) FROM ops_alerts a
+        WHERE a.entity_type='vehicle' AND a.entity_id=v.id AND a.status!='Resolved') active_alert_count,
+       (SELECT a.title FROM ops_alerts a
+        WHERE a.entity_type='vehicle' AND a.entity_id=v.id AND a.status!='Resolved'
+        ORDER BY a.created_at DESC,a.id DESC LIMIT 1) active_alert_cause
      FROM vehicles v
      LEFT JOIN locations l ON l.id=v.location_id
      WHERE v.id=?`,
@@ -42,7 +65,12 @@ router.get(
       );
       res.json(
         await all(
-          `SELECT v.*,l.name location_name
+          `SELECT v.*,l.name location_name,
+             (SELECT COUNT(*) FROM ops_alerts a
+              WHERE a.entity_type='vehicle' AND a.entity_id=v.id AND a.status!='Resolved') active_alert_count,
+             (SELECT a.title FROM ops_alerts a
+              WHERE a.entity_type='vehicle' AND a.entity_id=v.id AND a.status!='Resolved'
+              ORDER BY a.created_at DESC,a.id DESC LIMIT 1) active_alert_cause
            FROM vehicles v
            LEFT JOIN locations l ON l.id=v.location_id
            WHERE v.expedition_id=?
@@ -50,6 +78,123 @@ router.get(
           expedition.id,
         ),
       );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.get(
+  '/:id/alerts',
+  requirePermission('vehicles.read'),
+  async (req, res, next) => {
+    try {
+      const vehicle = await Vehicle.getById(req.params.id);
+      if (!vehicle) throw new HttpError(404, 'Vehicle not found');
+      await ensureExpeditionAccess(req.user, vehicle.expedition_id);
+      res.json({ items: await vehicleAlerts(vehicle.id) });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/:id/alerts',
+  requirePermission('vehicles.manage'),
+  async (req, res, next) => {
+    try {
+      requireFields(req.body, 'issue_type');
+      if (!VEHICLE_ISSUE_TYPES.includes(req.body.issue_type)) {
+        throw new HttpError(400, 'Invalid vehicle issue type');
+      }
+
+      const vehicle = await Vehicle.getById(req.params.id);
+      if (!vehicle) throw new HttpError(404, 'Vehicle not found');
+      await ensureExpeditionAccess(req.user, vehicle.expedition_id);
+
+      const item = await Alert.create({
+        expedition_id: vehicle.expedition_id,
+        severity: req.body.severity || 'Warning',
+        source: 'Vehicle',
+        title: req.body.issue_type,
+        detail: String(req.body.detail || '').trim() || null,
+        status: 'Open',
+        entity_type: 'vehicle',
+        entity_id: vehicle.id,
+        created_by: req.user.id,
+        created_at: nowIso(),
+        acknowledged_at: null,
+        resolved_at: null,
+      });
+
+      await recordActivity(
+        vehicle.expedition_id,
+        'vehicle',
+        vehicle.code + ' reported: ' + item.title,
+        req.user.id,
+      );
+      await recordAudit(
+        req.user,
+        vehicle.expedition_id,
+        'created',
+        'alert',
+        item.id,
+        req.body,
+      );
+      await broadcast(
+        vehicle.expedition_id,
+        makeEvent('alert.created', vehicle.expedition_id, 'alert', item.id),
+      );
+      res.status(201).json(item);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.patch(
+  '/:id/alerts/:alertId/resolve',
+  requirePermission('vehicles.manage'),
+  async (req, res, next) => {
+    try {
+      const vehicle = await Vehicle.getById(req.params.id);
+      if (!vehicle) throw new HttpError(404, 'Vehicle not found');
+      await ensureExpeditionAccess(req.user, vehicle.expedition_id);
+
+      const item = await Alert.getById(req.params.alertId);
+      if (
+        !item ||
+        Number(item.expedition_id) !== Number(vehicle.expedition_id) ||
+        item.entity_type !== 'vehicle' ||
+        Number(item.entity_id) !== Number(vehicle.id)
+      ) {
+        throw new HttpError(404, 'Vehicle alert not found');
+      }
+
+      const updated = await Alert.update(item.id, {
+        status: 'Resolved',
+        resolved_at: item.resolved_at || nowIso(),
+      });
+      await recordActivity(
+        vehicle.expedition_id,
+        'vehicle',
+        vehicle.code + ' alert resolved: ' + item.title,
+        req.user.id,
+      );
+      await recordAudit(
+        req.user,
+        vehicle.expedition_id,
+        'updated',
+        'alert',
+        item.id,
+        { status: 'Resolved' },
+      );
+      await broadcast(
+        vehicle.expedition_id,
+        makeEvent('alert.updated', vehicle.expedition_id, 'alert', item.id),
+      );
+      res.json(updated);
     } catch (error) {
       next(error);
     }

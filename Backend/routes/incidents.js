@@ -25,6 +25,17 @@ import {
 const router = Router();
 router.use(authRequired);
 
+const INCIDENT_TYPES = [
+  'Field Emergency',
+  'Medical',
+  'Vehicle',
+  'Weather',
+  'Communications',
+  'Safety',
+  'Environmental',
+];
+const INCIDENT_SEVERITIES = ['Critical', 'High', 'Medium', 'Low'];
+
 const detail = (id) =>
   get(
     `SELECT i.*,l.name location_name,v.code vehicle_code,
@@ -66,6 +77,145 @@ router.get(
     }
   },
 );
+
+router.post('/sos', async (req, res, next) => {
+  try {
+    if (
+      !hasPermission(req.user, 'incidents.manage') &&
+      !hasPermission(req.user, 'incidents.create')
+    ) {
+      throw new HttpError(403, 'Permission denied');
+    }
+
+    requireFields(req.body, 'expedition_id');
+    const expedition = await ensureExpeditionAccess(
+      req.user,
+      req.body.expedition_id,
+    );
+
+    const hasLatitude =
+      req.body.latitude !== undefined && req.body.latitude !== null;
+    const hasLongitude =
+      req.body.longitude !== undefined && req.body.longitude !== null;
+    let latitude = null;
+    let longitude = null;
+
+    if (hasLatitude || hasLongitude) {
+      latitude = Number(req.body.latitude);
+      longitude = Number(req.body.longitude);
+      if (
+        !hasLatitude ||
+        !hasLongitude ||
+        !Number.isFinite(latitude) ||
+        !Number.isFinite(longitude) ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180
+      ) {
+        throw new HttpError(400, 'Valid latitude and longitude are required');
+      }
+    }
+
+    const location =
+      latitude === null
+        ? req.user.name + ' account location (GPS unavailable)'
+        : 'GPS coordinates: ' +
+          latitude.toFixed(5) +
+          ', ' +
+          longitude.toFixed(5);
+
+    const countRow = await get(
+      'SELECT COUNT(*) value FROM incidents WHERE expedition_id=?',
+      expedition.id,
+    );
+    const code =
+      'INC-' +
+      String(Number(countRow?.value || 0) + 1).padStart(3, '0');
+    const createdAt = nowIso();
+    const description = [
+      'EMERGENCY SOS activated by ' +
+        req.user.name +
+        ' (' +
+        req.user.email +
+        ').',
+      'Origin account: ' + req.user.email,
+      'Location: ' + location,
+    ].join(' ');
+
+    const item = await Incident.create({
+      expedition_id: expedition.id,
+      code,
+      title: 'EMERGENCY',
+      type: 'Field Emergency',
+      severity: 'Critical',
+      location_id: null,
+      status: 'Active',
+      description,
+      affected_count: 0,
+      assigned_vehicle_id: null,
+      created_by: req.user.id,
+      created_at: createdAt,
+      resolved_at: null,
+    });
+
+    await run(
+      `INSERT INTO incident_events(
+        incident_id,event_type,note,user_id,created_at
+      ) VALUES(?,?,?,?,?)`,
+      item.id,
+      'SOS activated',
+      description,
+      req.user.id,
+      createdAt,
+    );
+    await recordActivity(
+      expedition.id,
+      'incident',
+      'EMERGENCY SOS activated by ' + req.user.name,
+      req.user.id,
+    );
+    await recordAudit(req.user, expedition.id, 'created', 'incident', item.id, {
+      source: 'SOS',
+      latitude,
+      longitude,
+    });
+    await broadcast(
+      expedition.id,
+      makeEvent('incident.created', expedition.id, 'incident', item.id),
+    );
+
+    const emergencyEvent = makeEvent(
+      'emergency.sos',
+      expedition.id,
+      'incident',
+      item.id,
+      {
+        message: 'EMERGENCY',
+        incident_id: item.id,
+        incident_code: item.code,
+        initiated_by: req.user.name,
+        account: req.user.email,
+        expedition_name: expedition.name,
+        location,
+        latitude,
+        longitude,
+      },
+    );
+    await broadcast(expedition.id, emergencyEvent);
+
+    res.status(201).json({
+      ...(await detail(item.id)),
+      emergency_event: emergencyEvent,
+    });
+  } catch (error) {
+    if (String(error.message).includes('UNIQUE')) {
+      next(new HttpError(409, 'Incident code already exists; retry SOS'));
+      return;
+    }
+    next(error);
+  }
+});
 
 router.post('/', async (req, res, next) => {
   try {
@@ -184,6 +334,73 @@ router.get(
           item.id,
         ),
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.patch(
+  '/:id',
+  requirePermission('incidents.manage'),
+  async (req, res, next) => {
+    try {
+      const item = await Incident.getById(req.params.id);
+      if (!item) throw new HttpError(404, 'Incident not found');
+      await ensureExpeditionAccess(req.user, item.expedition_id);
+
+      if (req.body.type === undefined && req.body.severity === undefined) {
+        throw new HttpError(400, 'Incident type or severity is required');
+      }
+
+      const type = req.body.type ?? item.type;
+      const severity = req.body.severity ?? item.severity;
+      if (!INCIDENT_TYPES.includes(type)) {
+        throw new HttpError(400, 'Invalid incident type');
+      }
+      if (!INCIDENT_SEVERITIES.includes(severity)) {
+        throw new HttpError(400, 'Invalid incident severity');
+      }
+
+      await Incident.update(item.id, { type, severity });
+      const changes = [];
+      if (type !== item.type) changes.push('Type changed to ' + type);
+      if (severity !== item.severity) {
+        changes.push('Severity changed to ' + severity);
+      }
+      const note =
+        String(req.body.note || '').trim() ||
+        (changes.length ? changes.join('; ') : 'Incident details reviewed');
+
+      await run(
+        `INSERT INTO incident_events(
+          incident_id,event_type,note,user_id,created_at
+        ) VALUES(?,?,?,?,?)`,
+        item.id,
+        'Incident updated',
+        note,
+        req.user.id,
+        nowIso(),
+      );
+      await recordActivity(
+        item.expedition_id,
+        'incident',
+        'Incident ' + item.code + ' updated',
+        req.user.id,
+      );
+      await recordAudit(
+        req.user,
+        item.expedition_id,
+        'updated',
+        'incident',
+        item.id,
+        req.body,
+      );
+      await broadcast(
+        item.expedition_id,
+        makeEvent('incident.updated', item.expedition_id, 'incident', item.id),
+      );
+      res.json(await detail(item.id));
     } catch (error) {
       next(error);
     }

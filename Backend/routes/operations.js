@@ -6,6 +6,7 @@ import ScienceRecord from '../models/ScienceRecord.js';
 import Communication from '../models/Communication.js';
 import Readiness from '../models/Readiness.js';
 import Handover from '../models/Handover.js';
+import Route from '../models/Route.js';
 import { authRequired } from '../utils/middleware/auth.js';
 import { requirePermission } from '../utils/middleware/permissions.js';
 import { HttpError } from '../utils/http.js';
@@ -18,7 +19,10 @@ import {
 } from '../utils/validation.js';
 import { recordAudit } from '../utils/services/activityService.js';
 import { getUnifiedAlerts } from '../utils/services/alertService.js';
-import { createPlannedRoute } from '../utils/services/routeService.js';
+import {
+  createPlannedRoute,
+  haversineKm,
+} from '../utils/services/routeService.js';
 import {
   broadcast,
   makeEvent,
@@ -285,6 +289,129 @@ router.post(
         ),
       );
       res.status(201).json(item);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.patch(
+  '/routes/:id',
+  requirePermission('routes.manage'),
+  async (req, res, next) => {
+    try {
+      const item = await entity(
+        'planned_routes',
+        req.params.id,
+        'Route',
+      );
+      await ensureExpeditionAccess(req.user, item.expedition_id);
+
+      const [startLat, startLon] = validateCoordinates(
+        req.body.start_lat ?? item.start_lat,
+        req.body.start_lon ?? item.start_lon,
+        'Route start',
+      );
+      const [endLat, endLon] = validateCoordinates(
+        req.body.end_lat ?? item.end_lat,
+        req.body.end_lon ?? item.end_lon,
+        'Route destination',
+      );
+      const vehicleId =
+        req.body.vehicle_id === undefined
+          ? item.vehicle_id
+          : req.body.vehicle_id || null;
+      const personnelId =
+        req.body.personnel_id === undefined
+          ? item.personnel_id
+          : req.body.personnel_id || null;
+
+      await ensureEntityInExpedition(
+        'vehicles',
+        vehicleId,
+        item.expedition_id,
+        'Vehicle',
+      );
+      await ensureEntityInExpedition(
+        'personnel',
+        personnelId,
+        item.expedition_id,
+        'Team leader',
+      );
+
+      const vehicle = vehicleId
+        ? await get('SELECT * FROM vehicles WHERE id=?', Number(vehicleId))
+        : null;
+      const distance = Number(
+        haversineKm(startLat, startLon, endLat, endLon).toFixed(2),
+      );
+      const isAircraft = vehicle?.type === 'Aircraft';
+
+      const updated = await Route.update(item.id, {
+        name: req.body.name ?? item.name,
+        start_lat: startLat,
+        start_lon: startLon,
+        end_lat: endLat,
+        end_lon: endLon,
+        distance_km: distance,
+        eta_minutes: Math.max(
+          1,
+          Math.round((distance / (isAircraft ? 220 : 25)) * 60),
+        ),
+        fuel_liters: Number(
+          (distance * (isAircraft ? 2.6 : 0.6)).toFixed(1),
+        ),
+        vehicle_id: vehicleId,
+        personnel_id: personnelId,
+        status: req.body.status ?? item.status,
+        risk_summary: req.body.risk_summary ?? item.risk_summary,
+        updated_at: nowIso(),
+      });
+
+      await recordAudit(
+        req.user,
+        item.expedition_id,
+        'updated',
+        'route',
+        item.id,
+        req.body,
+      );
+      await broadcast(
+        item.expedition_id,
+        makeEvent('route.updated', item.expedition_id, 'route', item.id),
+      );
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.delete(
+  '/routes/:id',
+  requirePermission('routes.manage'),
+  async (req, res, next) => {
+    try {
+      const item = await entity(
+        'planned_routes',
+        req.params.id,
+        'Route',
+      );
+      await ensureExpeditionAccess(req.user, item.expedition_id);
+
+      await Route.delete(item.id);
+      await recordAudit(
+        req.user,
+        item.expedition_id,
+        'deleted',
+        'route',
+        item.id,
+      );
+      await broadcast(
+        item.expedition_id,
+        makeEvent('route.deleted', item.expedition_id, 'route', item.id),
+      );
+      res.json({ ok: true, id: item.id });
     } catch (error) {
       next(error);
     }

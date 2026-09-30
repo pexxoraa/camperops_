@@ -4,6 +4,8 @@ export default function Assets() {
   return (
     <ResourcePage
       title="Assets"
+      createLabel="Add Asset"
+      enableUpdate
       description="Operational equipment, condition, category and personnel assignment."
       endpoint="/api/assets"
       columns={[

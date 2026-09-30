@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api from "../utils/services/api";
 import { useExpedition } from "../context/ExpeditionContext";
 import { useRealtime } from "../context/RealtimeContext";
 import ActionFormModal from "./ActionFormModal";
 import DataTable from "./DataTable";
+import Modal from "./Modal";
 
 export default function Operations() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { selectedId } = useExpedition();
   const { revision } = useRealtime();
   const [tasks, setTasks] = useState([]);
@@ -15,6 +18,9 @@ export default function Operations() {
   const [form, setForm] = useState({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [focusedTask, setFocusedTask] = useState(null);
+  const focusId =
+    searchParams.get("kind") === "task" ? searchParams.get("focus") : null;
 
   const refresh = useCallback(async () => {
     if (!selectedId) return;
@@ -31,6 +37,24 @@ export default function Operations() {
   useEffect(() => {
     refresh();
   }, [refresh, revision]);
+
+  useEffect(() => {
+    if (!focusId || !tasks.length) return;
+    const task = tasks.find((item) => String(item.id) === focusId);
+    if (task) setFocusedTask(task);
+  }, [focusId, tasks]);
+
+  function closeFocusedTask() {
+    setFocusedTask(null);
+    setSearchParams(
+      (current) => {
+        current.delete("focus");
+        current.delete("kind");
+        return current;
+      },
+      { replace: true },
+    );
+  }
 
   function openAction(kind) {
     setAction(kind);
@@ -254,6 +278,32 @@ export default function Operations() {
         busy={busy}
         error={error}
       />
+
+      <Modal
+        open={Boolean(focusedTask)}
+        title="Mission task details"
+        subtitle={focusedTask?.title || ""}
+        onClose={closeFocusedTask}
+        wide
+      >
+        <dl className="record-details">
+          {Object.entries(focusedTask || {})
+            .filter(
+              ([, value]) =>
+                value !== null && value !== undefined && value !== "",
+            )
+            .map(([key, value]) => (
+              <div key={key}>
+                <dt>{key.replaceAll("_", " ")}</dt>
+                <dd>
+                  {typeof value === "object"
+                    ? JSON.stringify(value)
+                    : String(value)}
+                </dd>
+              </div>
+            ))}
+        </dl>
+      </Modal>
     </section>
   );
 }

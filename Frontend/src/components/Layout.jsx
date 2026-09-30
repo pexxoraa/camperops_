@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Navbar from "./Navbar";
+import EmergencyOverlay from "./EmergencyOverlay";
 
 export default function Layout() {
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -23,6 +24,7 @@ export default function Layout() {
 
   return (
     <div className="app-shell">
+      <EmergencyOverlay />
       <a className="skip-link" href="#main-content">
         Skip to main content
       </a>

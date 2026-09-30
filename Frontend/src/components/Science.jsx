@@ -3,6 +3,7 @@ import ResourcePage from './ResourcePage'
 export default function Science() {
   return <ResourcePage
     title="Science"
+    createLabel="Add Project Record"
     description="Projects, samples, observations, coordinates, researchers, collection times and storage."
     endpoint="/api/ops/science"
     columns={[

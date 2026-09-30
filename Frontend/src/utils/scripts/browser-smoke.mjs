@@ -318,6 +318,7 @@ const modules = [
   ["Environment", "Environment"],
   ["Activity", "Activity & Audit"],
   ["Settings", "Settings"],
+  ["About Us", "About Our Team"],
 ];
 for (const [link, heading] of modules) {
   await page.getByRole("link", { name: link, exact: true }).click();
