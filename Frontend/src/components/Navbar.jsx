@@ -7,7 +7,7 @@ import api from "../utils/services/api";
 import { getPolarRegionLabel } from "../utils/polarRegion";
 import ThemeToggle from "./ThemeToggle";
 
-export default function Navbar({ onMenuToggle }) {
+export default function Navbar() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { expeditions, selectedId, selectedExpedition, selectExpedition } =
@@ -35,9 +35,8 @@ export default function Navbar({ onMenuToggle }) {
     if (!selectedId || query.trim().length < 2) {
       setResults([]);
       setSearching(false);
-      return undefined;
+      return;
     }
-
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setSearching(true);
@@ -55,7 +54,6 @@ export default function Navbar({ onMenuToggle }) {
         if (!cancelled) setSearching(false);
       }
     }, 220);
-
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -98,7 +96,6 @@ export default function Navbar({ onMenuToggle }) {
       return;
     }
     if (!results.length) return;
-
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setActiveResult((index) => (index + 1) % results.length);
@@ -116,30 +113,20 @@ export default function Navbar({ onMenuToggle }) {
     ? "OFFLINE"
     : connected
       ? "LIVE"
-      : "HTTP";
+      : "DEAD";
   const connectionMessage = !networkOnline
-    ? "The browser is offline. Cached information may remain available and queued changes will wait for connectivity."
+    ? "The system is offline right now. New data will be restored when it is online."
     : connected
-      ? "Online with realtime expedition updates connected."
-      : "Online over HTTP while realtime updates reconnect.";
+      ? "The system is online and live updates are connected."
+      : "The system is online, but live updates are reconnecting.";
 
   return (
     <header className="navbar">
-      <button
-        className="mobile-menu-button"
-        type="button"
-        aria-label="Open navigation"
-        onClick={onMenuToggle}
-      >
-        <span aria-hidden="true">☰</span>
-      </button>
-
       <div className="expedition-picker">
-        <label htmlFor="expedition-select">Expedition</label>
+        <label>Expedition</label>
         <select
-          id="expedition-select"
           value={selectedId || ""}
-          onChange={(event) => selectExpedition(event.target.value)}
+          onChange={(e) => selectExpedition(e.target.value)}
         >
           {expeditions.map((item) => (
             <option key={item.id} value={item.id}>
@@ -149,16 +136,11 @@ export default function Navbar({ onMenuToggle }) {
         </select>
         <span className="region-pill">{pole}</span>
       </div>
-
       <div className="global-search">
-        <label className="sr-only" htmlFor="global-search-input">
-          Search expedition records
-        </label>
         <input
-          id="global-search-input"
           value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
+          onChange={(e) => {
+            setQuery(e.target.value);
             setResults([]);
             setActiveResult(0);
             setSearchOpen(true);
@@ -167,18 +149,14 @@ export default function Navbar({ onMenuToggle }) {
           onBlur={() => setSearchOpen(false)}
           onKeyDown={handleSearchKeyDown}
           role="combobox"
+          aria-label="Search expedition records"
           aria-expanded={searchOpen && query.trim().length >= 2}
           aria-controls="global-search-results"
           aria-autocomplete="list"
           placeholder="Search personnel, cargo, incidents…"
-          autoComplete="off"
         />
         {searchOpen && query.trim().length >= 2 ? (
-          <div
-            className="search-results"
-            id="global-search-results"
-            role="listbox"
-          >
+          <div className="search-results" id="global-search-results" role="listbox">
             {results.slice(0, 8).map((item, index) => (
               <button
                 key={item.kind + "-" + (item.id ?? index)}
@@ -204,7 +182,6 @@ export default function Navbar({ onMenuToggle }) {
           </div>
         ) : null}
       </div>
-
       <div className="user-tools">
         <ThemeToggle />
         <span className="live-status-wrap">
@@ -216,7 +193,7 @@ export default function Navbar({ onMenuToggle }) {
                 ? "connected"
                 : connectionStatus === "OFFLINE"
                   ? "offline"
-                  : "http")
+                  : "dead")
             }
             aria-label={"Connection status: " + connectionStatus}
             aria-describedby="connection-status-tooltip"
@@ -235,7 +212,7 @@ export default function Navbar({ onMenuToggle }) {
           <strong>{user?.name}</strong>
           <span>{user?.role}</span>
         </div>
-        <button className="button ghost signout-button" onClick={logout}>
+        <button className="button ghost" onClick={logout}>
           Sign out
         </button>
       </div>

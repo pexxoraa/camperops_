@@ -73,17 +73,6 @@ export default function Sidebar({ open = false, onClose }) {
         ))}
       </nav>
 
-      <NavLink
-        to="/about-us"
-        onClick={onClose}
-        className={({ isActive }) =>
-          isActive
-            ? "nav-link sidebar-about-link active"
-            : "nav-link sidebar-about-link"
-        }
-      >
-        About Us
-      </NavLink>
 
       <div className="sidebar-mobile-account">
         <div>
@@ -103,9 +92,17 @@ export default function Sidebar({ open = false, onClose }) {
       </div>
 
       <div className="sidebar-foot">
-        LOCAL REFACTOR
-        <br />
-        <span>Node + React</span>
+        <NavLink
+        to="/about-us"
+        onClick={onClose}
+        className={({ isActive }) =>
+          isActive
+            ? "nav-link sidebar-about-link active"
+            : "nav-link sidebar-about-link"
+        }
+      >
+        About Us
+        </NavLink>
       </div>
     </aside>
   );

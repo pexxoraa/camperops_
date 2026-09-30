@@ -13,7 +13,7 @@
   --ref-red: #e53935;
   --ref-orange: #f58b22;
   --ref-purple: #7b4de0;
-  --ref-shadow: 0 8px 24px rgba(20, 54, 84, 0.09);
+  --ref-shadow: 0 8px 24px rgba(20, 54, 84, 0.25);
 }
 html,
 body {

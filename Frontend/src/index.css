@@ -434,6 +434,8 @@ body {
   background: #f8fbfd;
   border-radius: 7px;
   padding: 11px;
+  shadow: var(--ref-shadow);
+  box-shadow: inset -5px -5px 2px rgba(0, 0, 0, 0.20);
 }
 .resource-cards strong,
 .resource-cards span {
@@ -1481,7 +1483,7 @@ body {
   border: 1px solid #d7e2ec;
   border-radius: 7px;
   background: #fff;
-  color: #29495e;
+  color: #f1f3f4;
   cursor: pointer;
   font-size: 19px;
   line-height: 1;

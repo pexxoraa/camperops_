@@ -349,7 +349,7 @@ export default function Dashboard() {
         <div className="panel-title">
           <div>
             <span className="dashboard-section-kicker">QUICK INSPECTION</span>
-            <h2>Alerts & incidents</h2>
+            <h2>⚠️ Alerts</h2>
           </div>
           <span>
             {vehicles.length} vehicles · {incidents.length} incidents ·{" "}
